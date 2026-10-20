@@ -94,9 +94,9 @@ public class OrderProcessorTests
 
         var row = Assert.Single(outbox.Enqueued);
         Assert.Equal("order.created", row.EventType);
-        Assert.Equal(tx.BeginCalls, 1);
-        Assert.Equal(tx.CommitCalls, 1);
-        Assert.Equal(tx.RollbackCalls, 0);
+        Assert.Equal(1, tx.BeginCalls);
+        Assert.Equal(1, tx.CommitCalls);
+        Assert.Equal(0, tx.RollbackCalls);
 
         // The envelope carries the stable event id + correlation id.
         var envelope = FlashSale.Domain.Events.EventEnvelope.TryParse(row.Payload);
@@ -120,8 +120,8 @@ public class OrderProcessorTests
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => CreateProcessor(repo, tx, outbox).ProcessAsync(Message(), CancellationToken.None));
 
-        Assert.Equal(tx.RollbackCalls, 1);
-        Assert.Equal(tx.CommitCalls, 0);
+        Assert.Equal(1, tx.RollbackCalls);
+        Assert.Equal(0, tx.CommitCalls);
         Assert.Empty(outbox.Enqueued);
     }
 }
