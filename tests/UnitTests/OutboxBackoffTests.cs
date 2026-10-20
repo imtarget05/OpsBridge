@@ -46,9 +46,10 @@ public class OutboxDispatcherTests
         var publisher = new ControllablePublisher();
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
-        var dispatched = await useCase.ExecuteBatchAsync(50);
+        var result = await useCase.ExecuteBatchAsync(50);
 
-        Assert.Equal(1, dispatched);
+        Assert.Equal(1, result.Dispatched);
+        Assert.Equal(0, result.Failed);
         Assert.Equal(new long[] { 1 }, repo.Processed);
         Assert.Empty(repo.Failed);
     }
@@ -60,9 +61,10 @@ public class OutboxDispatcherTests
         var publisher = new ControllablePublisher { FailFor = { "order.created" } };
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
-        var dispatched = await useCase.ExecuteBatchAsync(50);
+        var result = await useCase.ExecuteBatchAsync(50);
 
-        Assert.Equal(0, dispatched);
+        Assert.Equal(0, result.Dispatched);
+        Assert.Equal(1, result.Failed);
         Assert.Empty(repo.Processed);
         Assert.Equal(new long[] { 7 }, repo.Failed);
         Assert.Contains("broker unavailable", repo.LastError);
@@ -80,9 +82,9 @@ public class OutboxDispatcherTests
         var publisher = new ControllablePublisher { FailFor = { "poison" } };
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
-        var dispatched = await useCase.ExecuteBatchAsync(50);
+        var result = await useCase.ExecuteBatchAsync(50);
 
-        Assert.Equal(2, dispatched);
+        Assert.Equal(2, result.Dispatched);
         Assert.Equal(new long[] { 1, 3 }, repo.Processed);
         Assert.Equal(new long[] { 2 }, repo.Failed);
     }
@@ -95,10 +97,11 @@ public class OutboxDispatcherTests
         var repo = new RecordingOutboxRepository(Row(5, "order.created", payload: "not-an-envelope"));
         var publisher = new ControllablePublisher();
 
-        var dispatched = await new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance)
+        var result = await new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance)
             .ExecuteBatchAsync(50);
 
-        Assert.Equal(0, dispatched);
+        Assert.Equal(0, result.Dispatched);
+        Assert.Equal(1, result.Failed);
         Assert.Empty(publisher.Published);
         Assert.Contains("envelope", repo.LastError);
     }
@@ -127,11 +130,51 @@ public class OutboxDispatcherTests
         Assert.Equal("{\"orderId\":\"abc\"}", envelope.Payload);
     }
 
+    [Fact]
+    public async Task ExecuteBatchAsync_RowWithoutEnvelope_IsTreatedAsPoisonAndDeadLettered()
+    {
+        // A row whose payload is not an envelope must never reach the bus: the
+        // consumer could not dedup it. It burns its retries and ends up dead —
+        // and the dispatcher REPORTS that, so a poison row is never silent.
+        var repo = new RecordingOutboxRepository(Row(5, "order.created", payload: "not-an-envelope"))
+        {
+            RetryCeiling = 1
+        };
+        var publisher = new ControllablePublisher();
+
+        var result = await new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance)
+            .ExecuteBatchAsync(50);
+
+        Assert.Equal(0, result.Dispatched);
+        Assert.Equal(1, result.Failed);
+        Assert.Equal(1, result.DeadLettered);
+        Assert.Empty(publisher.Published);
+        Assert.Contains("envelope", repo.LastError);
+    }
+
+    [Fact]
+    public async Task ExecuteBatchAsync_FailedPublish_ReportsTheRetrySchedule()
+    {
+        // The dispatcher must be able to REPORT a failure, not only log it:
+        // the retry count and the next attempt are what the operator sees.
+        var repo = new RecordingOutboxRepository(Row(9, "order.created"));
+        var publisher = new ControllablePublisher { FailFor = { "order.created" } };
+
+        var result = await new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance)
+            .ExecuteBatchAsync(50);
+
+        Assert.Equal(1, result.Retried);
+        Assert.Equal(0, result.DeadLettered);
+    }
+
     private sealed class RecordingOutboxRepository(params OutboxMessage[] messages) : IOutboxRepository
     {
         public List<long> Processed { get; } = new();
         public List<long> Failed { get; } = new();
         public string? LastError { get; private set; }
+
+        /// <summary>Attempts left before the row is dead-lettered (test knob).</summary>
+        public int RetryCeiling { get; init; } = int.MaxValue;
 
         public Task EnqueueAsync(OutboxMessage message, CancellationToken ct = default) => Task.CompletedTask;
 
@@ -159,17 +202,23 @@ public class OutboxDispatcherTests
             return Task.CompletedTask;
         }
 
-        public Task MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default)
+        public Task<OutboxFailureOutcome> MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default)
         {
             Failed.Add(id);
             LastError = error;
-            return Task.CompletedTask;
+            var deadLettered = Failed.Count >= RetryCeiling;
+            return Task.FromResult(new OutboxFailureOutcome(
+                Failed.Count,
+                deadLettered ? null : DateTimeOffset.UtcNow.AddSeconds(2),
+                deadLettered));
         }
 
         public Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<OutboxMessage>>(Array.Empty<OutboxMessage>());
 
         public Task<int> CountStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<int> CountPendingAsync(CancellationToken ct = default) => Task.FromResult(messages.Length);
 
         public Task<int> RequeueStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
     }

@@ -75,7 +75,7 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
             """, ct);
     }
 
-    public async Task MarkFailedAsync(
+    public async Task<OutboxFailureOutcome> MarkFailedAsync(
         long id,
         Guid claimToken,
         string error,
@@ -106,6 +106,17 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
               AND  "ClaimToken" = {claimToken}
             """, ct);
 
+        // Read the outcome back: the dispatcher has to be able to REPORT a
+        // dead-lettered row (ADR-019) instead of failing silently.
+        var row = await db.OutboxMessages
+            .AsNoTracking()
+            .Where(m => m.Id == id)
+            .Select(m => new { m.RetryCount, m.NextAttemptAt, m.DeadLetteredAt })
+            .FirstOrDefaultAsync(ct);
+
+        return row is null
+            ? new OutboxFailureOutcome(0, null, DeadLettered: false)
+            : new OutboxFailureOutcome(row.RetryCount, row.NextAttemptAt, row.DeadLetteredAt is not null);
     }
 
     public async Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default)
@@ -126,6 +137,15 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
         return await db.OutboxMessages
             .CountAsync(m => m.ProcessedAt == null
                              && (m.DeadLetteredAt != null || m.NextAttemptAt > now), ct);
+    }
+
+    public async Task<int> CountPendingAsync(CancellationToken ct = default)
+    {
+        // OUTBOX LAG (ADR-019): everything written but not yet published —
+        // including rows that are waiting out a backoff deadline. This is the
+        // number an operator has to watch when the broker is unhealthy.
+        return await db.OutboxMessages.CountAsync(
+            m => m.ProcessedAt == null && m.DeadLetteredAt == null, ct);
     }
 
     public async Task<int> RequeueStuckAsync(CancellationToken ct = default)

@@ -34,7 +34,7 @@ public interface IOutboxRepository
     /// backoff to NextAttemptAt, and dead-letters the row once
     /// <see cref="FlashSale.Domain.Outbox.OutboxMessage.MaxRetryCount"/> is reached.
     /// </summary>
-    Task MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default);
+    Task<OutboxFailureOutcome> MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default);
 
     /// <summary>
     /// Rows that are NOT progressing: dead-lettered, or waiting on a backoff
@@ -47,8 +47,27 @@ public interface IOutboxRepository
     Task<int> CountStuckAsync(CancellationToken ct = default);
 
     /// <summary>
+    /// Rows that are written but not yet published (including rows waiting on
+    /// a backoff deadline). This is the OUTBOX LAG the operator has to watch.
+    /// </summary>
+    Task<int> CountPendingAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// Operator recovery: clears the retry/backoff/dead-letter state so the
     /// dispatcher picks the rows up again. Returns rows revived.
     /// </summary>
     Task<int> RequeueStuckAsync(CancellationToken ct = default);
 }
+
+/// <summary>
+/// What happened to a failed publish attempt (ADR-019). The dispatcher needs
+/// it to report retry/dead-letter counts — a poisoned row must never fail
+/// silently.
+/// </summary>
+/// <param name="RetryCount">Attempts made so far, after this failure.</param>
+/// <param name="NextAttemptAt">When the next attempt is due; NULL once dead-lettered.</param>
+/// <param name="DeadLettered">True when the retry ceiling was reached.</param>
+public sealed record OutboxFailureOutcome(
+    int RetryCount,
+    DateTimeOffset? NextAttemptAt,
+    bool DeadLettered);

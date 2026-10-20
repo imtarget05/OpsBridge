@@ -74,13 +74,15 @@ internal sealed class FakeOutboxRepository : IOutboxRepository
     public Task MarkProcessedAsync(long id, Guid claimToken, CancellationToken ct = default)
         => Task.CompletedTask;
 
-    public Task MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default)
-        => Task.CompletedTask;
+    public Task<OutboxFailureOutcome> MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default)
+        => Task.FromResult(new OutboxFailureOutcome(0, null, false));
 
     public Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<OutboxMessage>>(Array.Empty<OutboxMessage>());
 
     public Task<int> CountStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+    public Task<int> CountPendingAsync(CancellationToken ct = default) => Task.FromResult(Enqueued.Count);
 
     public Task<int> RequeueStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
 
