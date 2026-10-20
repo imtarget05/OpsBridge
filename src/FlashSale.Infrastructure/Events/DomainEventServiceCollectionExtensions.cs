@@ -80,6 +80,10 @@ public static class DomainEventServiceCollectionExtensions
         services.AddScoped<FlashSale.Application.Outbox.IOutboxRepository, OutboxRepository>();
         services.AddScoped<FlashSale.Application.Outbox.IInboxRepository, InboxRepository>();
         services.AddScoped<FlashSale.Application.Outbox.OutboxDispatcherUseCase>();
+        // ADR-019: the write transaction scope is what lets a business write
+        // path commit its state change and its outbox row together.
+        services.AddScoped<FlashSale.Application.Persistence.IWriteTransaction, EfWriteTransaction>();
+        services.AddScoped<FlashSale.Application.Outbox.OutboxEventWriter>();
         services.AddHostedService<FlashSale.Infrastructure.Outbox.OutboxDispatcherHostedService>();
         return services;
     }

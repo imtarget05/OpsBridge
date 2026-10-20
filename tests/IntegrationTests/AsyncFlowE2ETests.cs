@@ -1,3 +1,4 @@
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Inventory;
 using FlashSale.Application.Messaging;
 using FlashSale.Application.Orders;
@@ -23,8 +24,12 @@ public sealed class AsyncFlowE2ETests(FlashSaleFixture fx)
     private static OrderMessage Msg(int productId, int qty, string key) =>
         new(productId, qty, key, DateTimeOffset.UtcNow);
 
-    private static OrderProcessor Processor(OrderRepository repo) =>
-        new(repo, NullLogger<OrderProcessor>.Instance);
+    private static OrderProcessor Processor(AppDbContext db) =>
+        new(
+            new OrderRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            NullLogger<OrderProcessor>.Instance);
 
     // ---------------------------------------------------------------- 03 ---
     [Fact]
@@ -49,7 +54,7 @@ public sealed class AsyncFlowE2ETests(FlashSaleFixture fx)
         Assert.NotNull(entry);
 
         await using var db = fx.CreateDbContext();
-        await Processor(new OrderRepository(db))
+        await Processor(db)
             .ProcessAsync(entry!.Message, CancellationToken.None);
         if (entry.Complete is not null) await entry.Complete();
 
@@ -94,7 +99,7 @@ public sealed class AsyncFlowE2ETests(FlashSaleFixture fx)
 
         // Consumer mới xử lý lại message đó (at-least-once).
         await using (var db = fx.CreateDbContext())
-            await Processor(new OrderRepository(db))
+            await Processor(db)
                 .ProcessAsync(stranded!.Message, CancellationToken.None);
         if (stranded.Complete is not null) await stranded.Complete();
 

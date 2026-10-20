@@ -8,6 +8,12 @@ namespace FlashSale.Application.Outbox;
 /// <summary>
 /// Dispatches pending Outbox messages to the event backbone (Kafka / RabbitMQ).
 /// Marks each message processed only after the transport acknowledges receipt.
+///
+/// <para>
+/// ADR-019: the payload is the canonical event envelope, published verbatim so
+/// a retry republishes byte-identical content — including the stable
+/// <c>event_id</c> the consumer dedups on.
+/// </para>
 /// </summary>
 public sealed class OutboxDispatcherUseCase(
     IOutboxRepository outboxRepository,
@@ -28,15 +34,19 @@ public sealed class OutboxDispatcherUseCase(
         {
             try
             {
-                var @event = new OutboxDomainEventWrapper(
-                    msg.MessageId.ToString("N"),
-                    msg.EventType,
-                    msg.CreatedAt,
-                    msg.MessageId,
-                    "outbox-dispatcher",
-                    msg.Payload);
+                // A row without a valid envelope is POISON: publishing it would
+                // put a message on the bus that no consumer can dedup. It is
+                // treated as a failed attempt, so it burns its retries and ends
+                // up in the dead-letter state where an operator can see it.
+                var envelope = EventEnvelope.TryParse(msg.Payload)
+                    ?? throw new InvalidOperationException(
+                        $"Outbox row {msg.Id} ({msg.EventType}) does not carry a valid event envelope.");
 
-                await publisher.PublishAsync(@event, ct);
+                await publisher.PublishAsync(new OutboxEnvelopeEvent(envelope), ct);
+
+                // Processed is marked ONLY after the transport accepted the
+                // message. A crash in between means the row is published again
+                // — at-least-once — and the consumer dedups on event_id.
                 await outboxRepository.MarkProcessedAsync(msg.Id, claimToken, ct);
                 dispatched++;
             }
@@ -48,16 +58,5 @@ public sealed class OutboxDispatcherUseCase(
         }
 
         return dispatched;
-    }
-
-    private sealed record OutboxDomainEventWrapper(
-        string EventId,
-        string EventType,
-        DateTimeOffset OccurredAt,
-        Guid CorrelationId,
-        string Source,
-        string RawPayload) : DomainEvent(EventId, EventType, OccurredAt, CorrelationId, Source)
-    {
-        public override object Payload => RawPayload;
     }
 }

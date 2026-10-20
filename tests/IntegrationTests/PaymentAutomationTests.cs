@@ -32,7 +32,7 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
     {
         await using var db = fx.CreateDbContext();
         var repo = new OrderRepository(db);
-        await new OrderProcessor(repo, NullLogger<OrderProcessor>.Instance)
+        await fx.CreateOrderProcessor(db)
             .ProcessAsync(Msg(productId, 1, key, DateTimeOffset.UtcNow.AddMinutes(-10)),
                 CancellationToken.None);
         return await repo.GetOrderIdAsync(key) ?? throw new InvalidOperationException("no order");
@@ -59,7 +59,7 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
         await using var db = fx.CreateDbContext();
         var repo = new OrderRepository(db);
 
-        await new OrderProcessor(repo, NullLogger<OrderProcessor>.Instance)
+        await fx.CreateOrderProcessor(db)
             .ProcessAsync(Msg(productId, 2, "pay-window-1", DateTimeOffset.UtcNow.AddMinutes(15)),
                 CancellationToken.None);
 
@@ -172,14 +172,8 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
         var key = "pay-ok-1";
         var orderId = await CreatePendingOrderAsync(productId, key);
 
-        var publisher = new InMemoryDomainEventPublisher();
-        var captured = Capture(publisher);
-
         await using var db = fx.CreateDbContext();
-        var useCase = new RecordPaymentUseCase(
-            new PaymentRepository(db), new OrderReadModel(db),
-            new AutomationRunRepository(db), publisher,
-            NullLogger<RecordPaymentUseCase>.Instance);
+        var useCase = fx.CreateRecordPaymentUseCase(db);
 
         // These are use-case tests, not HTTP tests: the caller is the platform
         // itself (an operator runbook / the timer), so the identity is explicit
@@ -195,8 +189,12 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
 
         var order = await db.Orders.SingleAsync(o => o.Id == orderId);
         Assert.Equal(OrderStatus.Confirmed, order.Status);
-        Assert.Contains(captured, e => e.EventType == "payment.completed");
-        Assert.Contains(captured, e => e.EventType == "order.confirmed");
+        // ADR-019: the revenue events are written to the OUTBOX in the same
+        // transaction as the status change — they are no longer published
+        // directly to the broker.
+        var outboxTypes = await db.OutboxMessages.Select(m => m.EventType).ToListAsync();
+        Assert.Contains("payment.completed", outboxTypes);
+        Assert.Contains("order.confirmed", outboxTypes);
         // Stock was consumed by the order and stays consumed (paid => no release)
         Assert.Equal(9, await db.Products.Where(p => p.Id == productId)
             .Select(p => p.AvailableStock).FirstAsync());
@@ -209,14 +207,8 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
         var key = "pay-fail-1";
         var orderId = await CreatePendingOrderAsync(productId, key);
 
-        var publisher = new InMemoryDomainEventPublisher();
-        var captured = Capture(publisher);
-
         await using var db = fx.CreateDbContext();
-        var useCase = new RecordPaymentUseCase(
-            new PaymentRepository(db), new OrderReadModel(db),
-            new AutomationRunRepository(db), publisher,
-            NullLogger<RecordPaymentUseCase>.Instance);
+        var useCase = fx.CreateRecordPaymentUseCase(db);
 
         var result = await useCase.ExecuteAsync(key, PaymentOutcome.Failed, CallerIdentity.Operator, CancellationToken.None);
 
@@ -224,7 +216,8 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
         var order = await db.Orders.SingleAsync(o => o.Id == orderId);
         Assert.Equal(OrderStatus.PendingPayment, order.Status); // still awaiting payment
         Assert.Equal("failed", order.LastPaymentResult);
-        Assert.Contains(captured, e => e.EventType == "payment.failed");
+        var outboxTypes = await db.OutboxMessages.Select(m => m.EventType).ToListAsync();
+        Assert.Contains("payment.failed", outboxTypes);
         // Still eligible for the timeout scan afterwards; stock untouched
         Assert.Equal(9, await db.Products.Where(p => p.Id == productId)
             .Select(p => p.AvailableStock).FirstAsync());

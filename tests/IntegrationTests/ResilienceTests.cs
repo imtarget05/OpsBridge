@@ -29,7 +29,7 @@ public sealed class ResilienceTests(FlashSaleFixture fx)
 
         await using var db = fx.CreateDbContext();
         var repo = new OrderRepository(db);
-        await new OrderProcessor(repo, NullLogger<OrderProcessor>.Instance)
+        await fx.CreateOrderProcessor(db)
             .ProcessAsync(Msg(productId, 1, "fallback-1"), CancellationToken.None);
 
         var stock = await db.Products.Where(p => p.Id == productId).Select(p => p.AvailableStock).FirstAsync();
@@ -47,7 +47,7 @@ public sealed class ResilienceTests(FlashSaleFixture fx)
         Assert.NotNull(entry);
 
         await using var db = fx.CreateDbContext();
-        await new OrderProcessor(new OrderRepository(db), NullLogger<OrderProcessor>.Instance)
+        await fx.CreateOrderProcessor(db)
             .ProcessAsync(entry!.Message, CancellationToken.None);
         await entry.Complete!();
 

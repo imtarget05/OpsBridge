@@ -9,6 +9,12 @@ namespace FlashSale.Infrastructure.Persistence;
 /// </summary>
 public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
 {
+    /// <summary>
+    /// Writes the outbox row inside the caller's transaction (ADR-019).
+    /// <see cref="DbContext.SaveChangesAsync(CancellationToken)"/> enlists in
+    /// the ambient transaction, so a rollback of the business write removes the
+    /// event row as well — the dual-write gap cannot come back.
+    /// </summary>
     public async Task EnqueueAsync(OutboxMessage message, CancellationToken ct = default)
     {
         db.OutboxMessages.Add(message);
@@ -69,7 +75,11 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
             """, ct);
     }
 
-    public async Task MarkFailedAsync(long id, Guid claimToken, string error, CancellationToken ct = default)
+    public async Task MarkFailedAsync(
+        long id,
+        Guid claimToken,
+        string error,
+        CancellationToken ct = default)
     {
         var truncated = error.Length > 500 ? error[..500] : error;
         var backoffSeconds = OutboxMessage.BackoffFor(OutboxMessage.MaxRetryCount).TotalSeconds;
@@ -95,6 +105,7 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
             WHERE  "Id" = {id}
               AND  "ClaimToken" = {claimToken}
             """, ct);
+
     }
 
     public async Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default)

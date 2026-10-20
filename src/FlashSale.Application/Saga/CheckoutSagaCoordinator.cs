@@ -1,8 +1,9 @@
-using FlashSale.Application.Events;
 using FlashSale.Application.Inventory;
 using FlashSale.Application.Messaging;
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Payment;
 using FlashSale.Application.Persistence;
+using FlashSale.Domain;
 using FlashSale.Domain.Events;
 using FlashSale.Domain.Saga;
 using Microsoft.Extensions.Logging;
@@ -25,9 +26,17 @@ public sealed record CheckoutSagaResult(
     string Message);
 
 /// <summary>
-/// Checkout Saga Coordinator (Phases 9 & 11).
+/// Checkout Saga Coordinator (Phases 9 & 11, ADR-019).
 /// Orchestrates distributed state changes across Inventory, Order, and Payment bounded contexts.
 /// Enforces forward progress and automated compensating transactions on payment decline or timeout.
+///
+/// <para>
+/// ADR-019 — atomicity model: a saga is NOT one transaction (it spans an
+/// external payment call), but EVERY step is. Each step writes its state
+/// change and its events in ONE transaction, so the event stream can never
+/// describe a step that was rolled back, and a committed step can never lose
+/// its event. The payment call itself sits between two atomic steps.
+/// </para>
 /// </summary>
 public sealed class CheckoutSagaCoordinator(
     ICheckoutSagaRepository sagaRepository,
@@ -35,7 +44,8 @@ public sealed class CheckoutSagaCoordinator(
     IOrderRepository orderRepository,
     IPaymentRepository paymentRepository,
     IPaymentClient paymentClient,
-    IDomainEventPublisher domainEventPublisher,
+    IWriteTransaction transaction,
+    OutboxEventWriter outboxWriter,
     ILogger<CheckoutSagaCoordinator> logger)
 {
     public async Task<CheckoutSagaResult> ExecuteSagaAsync(
@@ -86,19 +96,34 @@ public sealed class CheckoutSagaCoordinator(
             PaymentStatus = PaymentTransactionStatus.Pending,
             CreatedAt = DateTimeOffset.UtcNow
         };
-        await sagaRepository.SaveAsync(saga, ct);
 
-        await PublishSafeAsync(new CheckoutSagaStartedEvent(
-            Guid.NewGuid().ToString("N"),
-            correlationId,
-            "checkout-saga",
-            DateTimeOffset.UtcNow,
-            saga.SagaId,
-            saga.OrderId,
-            command.ProductId,
-            command.Quantity,
-            command.Amount,
-            command.IdempotencyKey), ct);
+        // Step 0 (atomic): the saga state and its "started" event commit together.
+        await transaction.BeginAsync(ct);
+        try
+        {
+            await sagaRepository.SaveAsync(saga, ct);
+            await outboxWriter.EnqueueAsync(
+                new CheckoutSagaStartedEvent(
+                    Guid.NewGuid().ToString("D"),
+                    correlationId,
+                    "checkout-saga",
+                    DateTimeOffset.UtcNow,
+                    saga.SagaId,
+                    saga.OrderId,
+                    command.ProductId,
+                    command.Quantity,
+                    command.Amount,
+                    command.IdempotencyKey),
+                OutboxEventWriter.SagaAggregate,
+                saga.SagaId.ToString(),
+                ct);
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
 
         // Step 1: Reserve Inventory in fast reservation tier
         var reservation = await stockGateway.TryReserveAsync(command.ProductId, command.Quantity, command.IdempotencyKey);
@@ -126,7 +151,53 @@ public sealed class CheckoutSagaCoordinator(
             CorrelationId: correlationId,
             PaymentDueAt: DateTimeOffset.UtcNow.AddMinutes(15));
 
-        var persisted = await orderRepository.PersistAsync(orderMsg, ct);
+        // Step 2 (atomic): the order row, the saga state and order.created commit
+        // together — a saga can never own an order whose creation event is
+        // missing.
+        await transaction.BeginAsync(ct);
+        var persisted = false;
+        var orderId = 0;
+        try
+        {
+            persisted = await orderRepository.PersistAsync(orderMsg, ct);
+            if (persisted)
+            {
+                orderId = await orderRepository.GetOrderIdAsync(command.IdempotencyKey, ct) ?? 0;
+                saga.OrderId = orderId;
+                saga.InventoryStatus = InventoryReservationStatus.Reserved;
+                saga.Status = SagaStatus.InventoryReserved;
+                saga.UpdatedAt = DateTimeOffset.UtcNow;
+                await sagaRepository.SaveAsync(saga, ct);
+
+                await outboxWriter.EnqueueAsync(
+                    new OrderCreatedEvent(
+                        Guid.NewGuid().ToString("D"),
+                        correlationId,
+                        "checkout-saga",
+                        DateTimeOffset.UtcNow,
+                        orderId,
+                        command.ProductId,
+                        command.Quantity,
+                        command.UserId,
+                        command.IdempotencyKey,
+                        OrderStatus.PendingPayment),
+                    OutboxEventWriter.OrderAggregate,
+                    orderId.ToString(),
+                    ct);
+
+                await transaction.CommitAsync(ct);
+            }
+            else
+            {
+                await transaction.RollbackAsync(ct);
+            }
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
+
         if (!persisted)
         {
             logger.LogWarning("Saga {SagaId}: DB conditional persist failed (stock drift). Releasing Redis reservation.", saga.SagaId);
@@ -141,14 +212,7 @@ public sealed class CheckoutSagaCoordinator(
             return new CheckoutSagaResult(false, saga.SagaId, 0, saga.Status, saga.FailureReason);
         }
 
-        var orderId = await orderRepository.GetOrderIdAsync(command.IdempotencyKey, ct);
-        saga.OrderId = orderId ?? 0;
-        saga.InventoryStatus = InventoryReservationStatus.Reserved;
-        saga.Status = SagaStatus.InventoryReserved;
-        saga.UpdatedAt = DateTimeOffset.UtcNow;
-        await sagaRepository.SaveAsync(saga, ct);
-
-        // Step 2: Payment Execution with bounded retries for transient timeouts
+        // Step 3: Payment Execution with bounded retries for transient timeouts
         saga.Status = SagaStatus.PaymentProcessing;
         saga.PaymentStatus = PaymentTransactionStatus.Pending;
         saga.UpdatedAt = DateTimeOffset.UtcNow;
@@ -175,34 +239,55 @@ public sealed class CheckoutSagaCoordinator(
             await Task.Delay(50 * attempt, ct);
         }
 
-        // Step 3: Handle Outcome & Compensations
+        // Step 4: Handle Outcome & Compensations
         if (paymentResult.Success)
         {
             logger.LogInformation("Saga {SagaId}: Payment succeeded (tx={Tx}). Confirming order {OrderId}.",
                 saga.SagaId, paymentResult.TransactionId, saga.OrderId);
 
-            saga.PaymentStatus = PaymentTransactionStatus.Successful;
-            saga.Status = SagaStatus.Completed;
-            saga.UpdatedAt = DateTimeOffset.UtcNow;
+            // Step 4a (atomic): the confirmation, the saga state and the
+            // revenue-side events commit together.
+            await transaction.BeginAsync(ct);
+            try
+            {
+                saga.PaymentStatus = PaymentTransactionStatus.Successful;
+                saga.Status = SagaStatus.Completed;
+                saga.UpdatedAt = DateTimeOffset.UtcNow;
 
-            await paymentRepository.MarkPaidAsync(saga.OrderId, ct);
-            await sagaRepository.SaveAsync(saga, ct);
+                await paymentRepository.MarkPaidAsync(saga.OrderId, ct);
+                await sagaRepository.SaveAsync(saga, ct);
 
-            await PublishSafeAsync(new CheckoutSagaCompletedEvent(
-                Guid.NewGuid().ToString("N"),
-                correlationId,
-                "checkout-saga",
-                DateTimeOffset.UtcNow,
-                saga.SagaId,
-                saga.OrderId,
-                paymentResult.TransactionId ?? string.Empty), ct);
+                await outboxWriter.EnqueueAsync(
+                    new CheckoutSagaCompletedEvent(
+                        Guid.NewGuid().ToString("D"),
+                        correlationId,
+                        "checkout-saga",
+                        DateTimeOffset.UtcNow,
+                        saga.SagaId,
+                        saga.OrderId,
+                        paymentResult.TransactionId ?? string.Empty),
+                    OutboxEventWriter.SagaAggregate,
+                    saga.SagaId.ToString(),
+                    ct);
 
-            await PublishSafeAsync(new OrderConfirmedEvent(
-                Guid.NewGuid().ToString("N"),
-                correlationId,
-                "checkout-saga",
-                DateTimeOffset.UtcNow,
-                saga.OrderId), ct);
+                await outboxWriter.EnqueueAsync(
+                    new OrderConfirmedEvent(
+                        Guid.NewGuid().ToString("D"),
+                        correlationId,
+                        "checkout-saga",
+                        DateTimeOffset.UtcNow,
+                        saga.OrderId),
+                    OutboxEventWriter.OrderAggregate,
+                    saga.OrderId.ToString(),
+                    ct);
+
+                await transaction.CommitAsync(ct);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
 
             return new CheckoutSagaResult(
                 Success: true,
@@ -225,33 +310,56 @@ public sealed class CheckoutSagaCoordinator(
         // Compensation 1: Release stock in Redis
         await stockGateway.ReleaseReservationAsync(command.ProductId, command.Quantity, command.IdempotencyKey);
 
-        // Compensation 2: Cancel order and restore stock in database
-        if (saga.OrderId > 0)
+        // Compensation 2 (atomic): cancel the order, restore the stock in the
+        // database, persist the compensated saga state and emit the
+        // compensation events — all in ONE transaction. A compensated saga
+        // publishes checkout.saga.compensated, never a resurrected
+        // checkout.saga.completed.
+        await transaction.BeginAsync(ct);
+        try
         {
-            await paymentRepository.CancelAndReleaseStockAsync(saga.OrderId, ct);
+            if (saga.OrderId > 0)
+            {
+                await paymentRepository.CancelAndReleaseStockAsync(saga.OrderId, ct);
+            }
+
+            saga.InventoryStatus = InventoryReservationStatus.Released;
+            saga.Status = SagaStatus.Compensated;
+            saga.UpdatedAt = DateTimeOffset.UtcNow;
+            await sagaRepository.SaveAsync(saga, ct);
+
+            await outboxWriter.EnqueueAsync(
+                new CheckoutSagaCompensatedEvent(
+                    Guid.NewGuid().ToString("D"),
+                    correlationId,
+                    "checkout-saga",
+                    DateTimeOffset.UtcNow,
+                    saga.SagaId,
+                    saga.OrderId,
+                    saga.CompensationReason),
+                OutboxEventWriter.SagaAggregate,
+                saga.SagaId.ToString(),
+                ct);
+
+            await outboxWriter.EnqueueAsync(
+                new OrderCancelledEvent(
+                    Guid.NewGuid().ToString("D"),
+                    correlationId,
+                    "checkout-saga",
+                    DateTimeOffset.UtcNow,
+                    saga.OrderId,
+                    saga.CompensationReason),
+                OutboxEventWriter.OrderAggregate,
+                saga.OrderId.ToString(),
+                ct);
+
+            await transaction.CommitAsync(ct);
         }
-
-        saga.InventoryStatus = InventoryReservationStatus.Released;
-        saga.Status = SagaStatus.Compensated;
-        saga.UpdatedAt = DateTimeOffset.UtcNow;
-        await sagaRepository.SaveAsync(saga, ct);
-
-        await PublishSafeAsync(new CheckoutSagaCompensatedEvent(
-            Guid.NewGuid().ToString("N"),
-            correlationId,
-            "checkout-saga",
-            DateTimeOffset.UtcNow,
-            saga.SagaId,
-            saga.OrderId,
-            saga.CompensationReason), ct);
-
-        await PublishSafeAsync(new OrderCancelledEvent(
-            Guid.NewGuid().ToString("N"),
-            correlationId,
-            "checkout-saga",
-            DateTimeOffset.UtcNow,
-            saga.OrderId,
-            saga.CompensationReason), ct);
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
 
         return new CheckoutSagaResult(
             Success: false,
@@ -259,17 +367,5 @@ public sealed class CheckoutSagaCoordinator(
             OrderId: saga.OrderId,
             Status: saga.Status,
             Message: $"Checkout compensated: {saga.CompensationReason}");
-    }
-
-    private async Task PublishSafeAsync(DomainEvent @event, CancellationToken ct)
-    {
-        try
-        {
-            await domainEventPublisher.PublishAsync(@event, ct);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to publish domain event {EventType}.", @event.EventType);
-        }
     }
 }

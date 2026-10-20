@@ -17,10 +17,32 @@ namespace FlashSale.UnitTests;
 /// </summary>
 public class OutboxDispatcherTests
 {
+    /// <summary>
+    /// ADR-019: an outbox row is only publishable when it carries the
+    /// canonical event envelope. A row without one is POISON.
+    /// </summary>
+    private static OutboxMessage Row(long id, string eventType, string? payload = null) =>
+        new()
+        {
+            Id = id,
+            MessageId = Guid.Parse($"11111111-2222-3333-4444-5555555555{id:D2}"),
+            EventType = eventType,
+            Payload = payload ?? new EventEnvelope
+            {
+                EventId = Guid.Parse($"11111111-2222-3333-4444-5555555555{id:D2}").ToString("D"),
+                EventType = eventType,
+                AggregateType = "order",
+                AggregateId = id.ToString(),
+                OccurredAt = DateTimeOffset.UtcNow,
+                CorrelationId = Guid.NewGuid(),
+                Payload = "{\"orderId\":\"abc\"}"
+            }.ToJson()
+        };
+
     [Fact]
     public async Task ExecuteBatchAsync_SuccessfulPublish_MarksProcessedAndNeverFailed()
     {
-        var repo = new RecordingOutboxRepository(new OutboxMessage { Id = 1, EventType = "order.created" });
+        var repo = new RecordingOutboxRepository(Row(1, "order.created"));
         var publisher = new ControllablePublisher();
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
@@ -34,7 +56,7 @@ public class OutboxDispatcherTests
     [Fact]
     public async Task ExecuteBatchAsync_FailedPublish_MarksFailedAndDoesNotProcess()
     {
-        var repo = new RecordingOutboxRepository(new OutboxMessage { Id = 7, EventType = "order.created" });
+        var repo = new RecordingOutboxRepository(Row(7, "order.created"));
         var publisher = new ControllablePublisher { FailFor = { "order.created" } };
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
@@ -52,9 +74,9 @@ public class OutboxDispatcherTests
         // The production shape: #2 is undeliverable while #1 and #3 are fine.
         // Losing #3 because of #2 is exactly what this asserts against.
         var repo = new RecordingOutboxRepository(
-            new OutboxMessage { Id = 1, EventType = "ok" },
-            new OutboxMessage { Id = 2, EventType = "poison" },
-            new OutboxMessage { Id = 3, EventType = "ok" });
+            Row(1, "ok"),
+            Row(2, "poison"),
+            Row(3, "ok"));
         var publisher = new ControllablePublisher { FailFor = { "poison" } };
         var useCase = new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance);
 
@@ -66,17 +88,28 @@ public class OutboxDispatcherTests
     }
 
     [Fact]
+    public async Task ExecuteBatchAsync_RowWithoutEnvelope_IsTreatedAsPoisonAndNeverPublished()
+    {
+        // A row whose payload is not an envelope must never reach the bus: the
+        // consumer could not dedup it.
+        var repo = new RecordingOutboxRepository(Row(5, "order.created", payload: "not-an-envelope"));
+        var publisher = new ControllablePublisher();
+
+        var dispatched = await new OutboxDispatcherUseCase(repo, publisher, NullLogger<OutboxDispatcherUseCase>.Instance)
+            .ExecuteBatchAsync(50);
+
+        Assert.Equal(0, dispatched);
+        Assert.Empty(publisher.Published);
+        Assert.Contains("envelope", repo.LastError);
+    }
+
+    [Fact]
     public async Task ExecuteBatchAsync_PublishesTheEnvelopeTheConsumerExpects()
     {
-        // The wrapper carries MessageId as CorrelationId and the stored payload
-        // verbatim — a change here silently breaks consumers.
-        var message = new OutboxMessage
-        {
-            Id = 11,
-            MessageId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
-            EventType = "orders.events",
-            Payload = "{\"orderId\":\"abc\"}"
-        };
+        // ADR-019: the dispatcher publishes the canonical envelope verbatim, so
+        // the consumer always finds event_id / event_type / payload. The stable
+        // event id must survive every retry.
+        var message = Row(11, "order.created");
         var repo = new RecordingOutboxRepository(message);
         var publisher = new ControllablePublisher();
 
@@ -84,10 +117,14 @@ public class OutboxDispatcherTests
             .ExecuteBatchAsync(50);
 
         var published = Assert.Single(publisher.Published);
-        Assert.Equal(message.MessageId, published.CorrelationId);
-        Assert.Equal("orders.events", published.EventType);
-        Assert.Equal("{\"orderId\":\"abc\"}", published.Payload);
+        Assert.Equal(message.MessageId.ToString("D"), published.EventId);
+        Assert.Equal("order.created", published.EventType);
         Assert.Equal("outbox-dispatcher", published.Source);
+
+        var envelope = EventEnvelope.TryParse(((ICarriesEventEnvelope)published).Envelope.ToJson());
+        Assert.NotNull(envelope);
+        Assert.Equal(message.MessageId.ToString("D"), envelope.EventId);
+        Assert.Equal("{\"orderId\":\"abc\"}", envelope.Payload);
     }
 
     private sealed class RecordingOutboxRepository(params OutboxMessage[] messages) : IOutboxRepository

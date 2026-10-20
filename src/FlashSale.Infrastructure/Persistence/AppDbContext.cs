@@ -119,17 +119,24 @@ public class AppDbContext : DbContext
             entity.Property(s => s.Version).IsConcurrencyToken();
         });
 
-        // Transactional Outbox (Phase 10, ADR-012)
+        // Transactional Outbox (Phase 10, ADR-012, ADR-019)
         modelBuilder.Entity<OutboxMessage>(entity =>
         {
             entity.HasKey(o => o.Id);
             entity.HasIndex(o => o.MessageId).IsUnique();
             entity.HasIndex(o => o.ProcessedAt);
+            entity.HasIndex(o => o.DeadLetteredAt);
             entity.Property(o => o.EventType).HasMaxLength(100);
             entity.Property(o => o.Topic).HasMaxLength(100);
+            // ADR-019: the envelope metadata of the stored event.
+            entity.Property(o => o.AggregateType).HasMaxLength(100);
+            entity.Property(o => o.AggregateId).HasMaxLength(100);
+            // Existing rows predate the envelope: they are version 0 ("unknown
+            // shape"), new rows are written with the current version.
+            entity.Property(o => o.SchemaVersion).HasDefaultValue(1);
         });
 
-        // Deduplication Inbox (Phase 10)
+        // Deduplication Inbox (Phase 10, ADR-019)
         modelBuilder.Entity<InboxMessage>(entity =>
         {
             entity.HasKey(i => new { i.MessageId, i.ConsumerName });

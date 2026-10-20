@@ -1,3 +1,4 @@
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Messaging;
 using FlashSale.Application.Orders;
 using FlashSale.Infrastructure.Messaging;
@@ -18,8 +19,12 @@ public sealed class OrderFlowTests(FlashSaleFixture fx)
     private static OrderMessage Msg(int productId, int qty, string key) =>
         new(productId, qty, key, DateTimeOffset.UtcNow);
 
-    private static OrderProcessor Processor(OrderRepository repo) =>
-        new(repo, NullLogger<OrderProcessor>.Instance);
+    private static OrderProcessor Processor(AppDbContext db) =>
+        new(
+            new OrderRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            NullLogger<OrderProcessor>.Instance);
 
     [Fact]
     public async Task NormalPurchase_DecrementsStock_And_PersistsOrder()
@@ -49,7 +54,7 @@ public sealed class OrderFlowTests(FlashSaleFixture fx)
             {
                 await using var db = fx.CreateDbContext();
                 var repo = new OrderRepository(db);
-                try { await Processor(repo).ProcessAsync(Msg(productId, 1, $"conc-{i}"), ct); }
+                try { await Processor(db).ProcessAsync(Msg(productId, 1, $"conc-{i}"), ct); }
                 catch (Domain.StockDriftException) { /* expected for losers */ }
             });
 
@@ -74,7 +79,7 @@ public sealed class OrderFlowTests(FlashSaleFixture fx)
             await gateway.TryReserveAsync(productId, 1, "dup-key"));
         await using var db = fx.CreateDbContext();
         var repo = new OrderRepository(db);
-        var processor = Processor(repo);
+        var processor = Processor(db);
         for (var i = 0; i < 5; i++)
             await processor.ProcessAsync(Msg(productId, 1, "dup-key"), CancellationToken.None);
 

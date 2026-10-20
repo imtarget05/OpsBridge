@@ -25,7 +25,14 @@ public sealed class OrderRepository(AppDbContext db) : IOrderRepository
         if (message.Quantity <= 0)
             throw new ArgumentOutOfRangeException(nameof(message.Quantity), "Quantity must be positive.");
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        // ADR-019: when the caller already opened a write transaction, JOIN
+        // it — the order row and the outbox row must commit together. The
+        // conditional stock UPDATE and the INSERT still share one transaction,
+        // but the transaction may now be owned by the caller.
+        var ownsTransaction = db.Database.CurrentTransaction is null;
+        await using var tx = ownsTransaction
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
 
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($"""
             UPDATE "Products"
@@ -36,7 +43,11 @@ public sealed class OrderRepository(AppDbContext db) : IOrderRepository
 
         if (affected == 0)
         {
-            await tx.RollbackAsync(ct);
+            if (tx is not null)
+            {
+                await tx.RollbackAsync(ct);
+            }
+
             return false;
         }
 
@@ -57,7 +68,11 @@ public sealed class OrderRepository(AppDbContext db) : IOrderRepository
         });
 
         await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        if (tx is not null)
+        {
+            await tx.CommitAsync(ct);
+        }
+
         return true;
     }
 

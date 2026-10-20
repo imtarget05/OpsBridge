@@ -1,4 +1,5 @@
 using FlashSale.Application.Inventory;
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Saga;
 using FlashSale.Domain.Events;
 using FlashSale.Domain.Saga;
@@ -13,7 +14,8 @@ public class CheckoutSagaTests
     private readonly FakeOrderRepository _orderRepo = new();
     private readonly FakePaymentRepository _paymentRepo = new();
     private readonly FakePaymentClient _paymentClient = new();
-    private readonly FakeDomainEventPublisher _publisher = new();
+    private readonly FakeOutboxRepository _outbox = new();
+    private readonly FakeWriteTransaction _transaction = new();
 
     private CheckoutSagaCoordinator CreateCoordinator() =>
         new(
@@ -22,7 +24,8 @@ public class CheckoutSagaTests
             _orderRepo,
             _paymentRepo,
             _paymentClient,
-            _publisher,
+            _transaction,
+            new OutboxEventWriter(_outbox),
             NullLogger<CheckoutSagaCoordinator>.Instance);
 
     [Fact]
@@ -54,9 +57,10 @@ public class CheckoutSagaTests
         Assert.Equal(0, _paymentRepo.CancelAndReleaseCalls);
         Assert.Equal(0, _stockGateway.ReleaseCalls);
 
-        Assert.Contains(_publisher.PublishedEvents, e => e is CheckoutSagaStartedEvent);
-        Assert.Contains(_publisher.PublishedEvents, e => e is CheckoutSagaCompletedEvent);
-        Assert.Contains(_publisher.PublishedEvents, e => e is OrderConfirmedEvent);
+        // ADR-019: the saga events go to the OUTBOX, not straight to the broker.
+        Assert.Contains("checkout.saga.started", _outbox.EnqueuedEventTypes);
+        Assert.Contains("checkout.saga.completed", _outbox.EnqueuedEventTypes);
+        Assert.Contains("order.confirmed", _outbox.EnqueuedEventTypes);
     }
 
     [Fact]
@@ -89,8 +93,9 @@ public class CheckoutSagaTests
         Assert.Equal(1, _paymentRepo.CancelAndReleaseCalls);
         Assert.Equal(0, _paymentRepo.MarkPaidCalls);
 
-        Assert.Contains(_publisher.PublishedEvents, e => e is CheckoutSagaCompensatedEvent);
-        Assert.Contains(_publisher.PublishedEvents, e => e is OrderCancelledEvent);
+        Assert.Contains("checkout.saga.compensated", _outbox.EnqueuedEventTypes);
+        Assert.Contains("order.cancelled", _outbox.EnqueuedEventTypes);
+        Assert.DoesNotContain("checkout.saga.completed", _outbox.EnqueuedEventTypes);
     }
 
     [Fact]

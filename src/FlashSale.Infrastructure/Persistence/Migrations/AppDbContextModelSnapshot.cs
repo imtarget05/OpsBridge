@@ -83,7 +83,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("WorkflowName");
 
-                    b.ToTable("AutomationRuns");
+                    b.ToTable("AutomationRuns", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Entities.Order", b =>
@@ -142,7 +142,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Orders");
+                    b.ToTable("Orders", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Entities.Product", b =>
@@ -195,7 +195,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
                     b.HasIndex("SKU")
                         .IsUnique();
 
-                    b.ToTable("Products");
+                    b.ToTable("Products", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Entities.User", b =>
@@ -229,7 +229,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Inventory.StockAlert", b =>
@@ -268,7 +268,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasFilter("\"Status\" = 'Open'");
 
-                    b.ToTable("StockAlerts");
+                    b.ToTable("StockAlerts", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Outbox.InboxMessage", b =>
@@ -287,7 +287,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProcessedAt");
 
-                    b.ToTable("InboxMessages");
+                    b.ToTable("InboxMessages", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Outbox.OutboxMessage", b =>
@@ -298,11 +298,22 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<string>("AggregateId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("AggregateType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<Guid?>("ClaimToken")
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset?>("ClaimedUntil")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CorrelationId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -334,6 +345,11 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer");
 
+                    b.Property<int>("SchemaVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
                     b.Property<string>("Topic")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -341,12 +357,14 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DeadLetteredAt");
+
                     b.HasIndex("MessageId")
                         .IsUnique();
 
                     b.HasIndex("ProcessedAt");
 
-                    b.ToTable("OutboxMessages");
+                    b.ToTable("OutboxMessages", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Reporting.DailyReport", b =>
@@ -400,7 +418,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
                     b.HasIndex("ReportDate")
                         .IsUnique();
 
-                    b.ToTable("DailyReports");
+                    b.ToTable("DailyReports", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Saga.CheckoutSagaState", b =>
@@ -468,7 +486,7 @@ namespace FlashSale.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("OrderId");
 
-                    b.ToTable("CheckoutSagas");
+                    b.ToTable("CheckoutSagas", (string)null);
                 });
 
             modelBuilder.Entity("FlashSale.Domain.Entities.Order", b =>

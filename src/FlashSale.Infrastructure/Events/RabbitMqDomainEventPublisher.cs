@@ -49,7 +49,12 @@ public sealed class RabbitMqDomainEventPublisher : IDomainEventPublisher, IAsync
     {
         try
         {
-            var json = JsonSerializer.Serialize(domainEvent, domainEvent.GetType());
+            // ADR-019: an event that carries the canonical envelope is
+            // published AS the envelope, so every producer ends up with the
+            // same wire format and the consumer always finds event_id.
+            var json = domainEvent is ICarriesEventEnvelope carrier
+                ? carrier.Envelope.ToJson()
+                : JsonSerializer.Serialize(domainEvent, domainEvent.GetType());
             var properties = new BasicProperties
             {
                 Persistent = true,

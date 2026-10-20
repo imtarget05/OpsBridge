@@ -10,6 +10,7 @@ using FlashSale.Application.Persistence;
 using FlashSale.Domain;
 using FlashSale.Domain.Automation;
 using FlashSale.Domain.Entities;
+using FlashSale.Domain.Events;
 using FlashSale.Domain.Outbox;
 using FlashSale.Domain.Saga;
 using FlashSale.Application.Outbox;
@@ -688,12 +689,32 @@ app.MapPost("/api/outbox/enqueue", async (
     IOutboxRepository outboxRepo,
     CancellationToken ct) =>
 {
+    // ADR-019: a row is only publishable when it carries the canonical
+    // envelope — the dispatcher treats a payload without one as poison.
+    var eventId = request.MessageId ?? Guid.NewGuid();
+    var envelope = new EventEnvelope
+    {
+        EventId = eventId.ToString("D"),
+        EventType = request.EventType ?? "OrderPlacedEvent",
+        AggregateType = "manual",
+        AggregateId = eventId.ToString("D"),
+        OccurredAt = DateTimeOffset.UtcNow,
+        CorrelationId = eventId,
+        SchemaVersion = EventEnvelope.CurrentSchemaVersion,
+        Payload = request.Payload ?? $"{{\"orderId\":\"{Guid.NewGuid()}\",\"amount\":99.99}}"
+    };
+
     var msg = new OutboxMessage
     {
-        MessageId = request.MessageId ?? Guid.NewGuid(),
-        EventType = request.EventType ?? "OrderPlacedEvent",
-        Topic = request.Topic ?? "orders.events",
-        Payload = request.Payload ?? $"{{\"orderId\":\"{Guid.NewGuid()}\",\"amount\":99.99}}"
+        MessageId = eventId,
+        EventType = envelope.EventType,
+        Topic = "automation.events",
+        Payload = envelope.ToJson(),
+        AggregateType = envelope.AggregateType,
+        AggregateId = envelope.AggregateId,
+        CorrelationId = envelope.CorrelationId,
+        SchemaVersion = envelope.SchemaVersion,
+        CreatedAt = envelope.OccurredAt
     };
 
     await outboxRepo.EnqueueAsync(msg, ct);

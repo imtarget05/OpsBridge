@@ -18,10 +18,36 @@ public class OutboxMessage
     public static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(60);
 
     public long Id { get; set; }
+
+    /// <summary>
+    /// STABLE event id (ADR-019). Generated ONCE when the row is written and
+    /// reused for every publish retry, so the consumer can dedup redeliveries
+    /// on it. It is also the <c>event_id</c> inside the stored envelope.
+    /// </summary>
     public Guid MessageId { get; set; } = Guid.NewGuid();
+
     public string EventType { get; set; } = string.Empty;
     public string Topic { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The canonical event envelope as JSON text (ADR-019). Stored, not
+    /// re-derived at publish time, so a retry republishes byte-identical
+    /// content — including the stable <c>event_id</c>.
+    /// </summary>
     public string Payload { get; set; } = string.Empty;
+
+    /// <summary>Aggregate the event is about ("order", "payment", "saga").</summary>
+    public string? AggregateType { get; set; }
+
+    /// <summary>Identity of the aggregate the event is about ("42", "…").</summary>
+    public string? AggregateId { get; set; }
+
+    /// <summary>Correlation id that ties the event to its request/audit trail.</summary>
+    public Guid? CorrelationId { get; set; }
+
+    /// <summary>Version of the envelope contract the payload was written with.</summary>
+    public int SchemaVersion { get; set; } = 1;
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ProcessedAt { get; set; }
     public int RetryCount { get; set; }

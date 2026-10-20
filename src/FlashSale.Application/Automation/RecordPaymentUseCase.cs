@@ -1,5 +1,5 @@
 using FlashSale.Application.Auth;
-using FlashSale.Application.Events;
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Persistence;
 using FlashSale.Domain.Automation;
 using FlashSale.Domain.Events;
@@ -31,12 +31,19 @@ public sealed record RecordPaymentResult(bool Found, bool Transitioned)
 /// transition exactly-once; every call writes an AutomationRun audit row.
 /// This is a SIMULATED gateway — no real processor is integrated (§19 not
 /// claimed otherwise).
+///
+/// <para>
+/// ADR-019: the status transition and the events are written in ONE
+/// transaction. The events go into the transactional outbox, so a confirmed
+/// order can never be missing its <c>payment.completed</c> event.
+/// </para>
 /// </summary>
 public sealed class RecordPaymentUseCase(
     IPaymentRepository payments,
     IOrderReadModel readModel,
     IAutomationRunRepository runs,
-    IDomainEventPublisher publisher,
+    IWriteTransaction transaction,
+    OutboxEventWriter outboxWriter,
     ILogger<RecordPaymentUseCase> logger)
 {
     /// <summary>
@@ -82,18 +89,28 @@ public sealed class RecordPaymentUseCase(
         var transitioned = false;
         try
         {
+            await transaction.BeginAsync(ct);
+
             if (outcome == PaymentOutcome.Completed)
             {
                 transitioned = await payments.MarkPaidAsync(order.OrderId, ct);
                 if (transitioned)
                 {
                     var amount = await ComputeAmountAsync(order, ct);
-                    await PublishSafeAsync(new PaymentCompletedEvent(
-                        Guid.NewGuid().ToString("N"), run.CorrelationId, "order-api/pay",
-                        DateTimeOffset.UtcNow, order.OrderId, amount, "simulation"), ct);
-                    await PublishSafeAsync(new OrderConfirmedEvent(
-                        Guid.NewGuid().ToString("N"), run.CorrelationId, "order-api/pay",
-                        DateTimeOffset.UtcNow, order.OrderId), ct);
+                    await outboxWriter.EnqueueAsync(
+                        new PaymentCompletedEvent(
+                            Guid.NewGuid().ToString("D"), run.CorrelationId, "order-api/pay",
+                            DateTimeOffset.UtcNow, order.OrderId, amount, "simulation"),
+                        OutboxEventWriter.OrderAggregate,
+                        order.OrderId.ToString(),
+                        ct);
+                    await outboxWriter.EnqueueAsync(
+                        new OrderConfirmedEvent(
+                            Guid.NewGuid().ToString("D"), run.CorrelationId, "order-api/pay",
+                            DateTimeOffset.UtcNow, order.OrderId),
+                        OutboxEventWriter.OrderAggregate,
+                        order.OrderId.ToString(),
+                        ct);
                 }
             }
             else
@@ -101,11 +118,18 @@ public sealed class RecordPaymentUseCase(
                 transitioned = await payments.MarkPaymentFailedAsync(order.OrderId, ct);
                 if (transitioned)
                 {
-                    await PublishSafeAsync(new PaymentFailedEvent(
-                        Guid.NewGuid().ToString("N"), run.CorrelationId, "order-api/pay",
-                        DateTimeOffset.UtcNow, order.OrderId, "simulation_failed"), ct);
+                    await outboxWriter.EnqueueAsync(
+                        new PaymentFailedEvent(
+                            Guid.NewGuid().ToString("D"), run.CorrelationId, "order-api/pay",
+                            DateTimeOffset.UtcNow, order.OrderId, "simulation_failed"),
+                        OutboxEventWriter.OrderAggregate,
+                        order.OrderId.ToString(),
+                        ct);
                 }
             }
+
+            // Status change + events commit together (ADR-019).
+            await transaction.CommitAsync(ct);
 
             run.Status = AutomationRunStatus.Success;
             run.FinishedAt = DateTimeOffset.UtcNow;
@@ -115,6 +139,11 @@ public sealed class RecordPaymentUseCase(
         }
         catch (Exception ex)
         {
+            // The business change is rolled back with its events: a half-paid
+            // order must not exist, and a payment.completed event must never
+            // describe a state that was rolled back.
+            await transaction.RollbackAsync(ct);
+
             run.Status = AutomationRunStatus.Failed;
             run.FinishedAt = DateTimeOffset.UtcNow;
             run.ErrorCode = ex.GetType().Name;
@@ -130,19 +159,5 @@ public sealed class RecordPaymentUseCase(
     {
         var product = await readModel.GetProductAsync(order.ProductId, ct);
         return product?.FlashSalePrice * order.Quantity ?? 0m;
-    }
-
-    private async Task PublishSafeAsync(DomainEvent domainEvent, CancellationToken ct)
-    {
-        try
-        {
-            await publisher.PublishAsync(domainEvent, ct);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "Event publish failed for {EventType} {EventId} (best-effort, audit row still written).",
-                domainEvent.EventType, domainEvent.EventId);
-        }
     }
 }

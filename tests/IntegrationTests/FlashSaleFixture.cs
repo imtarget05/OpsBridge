@@ -1,4 +1,7 @@
+using FlashSale.Application.Automation;
 using FlashSale.Application.Messaging;
+using FlashSale.Application.Outbox;
+using FlashSale.Application.Orders;
 using FlashSale.Domain.Entities;
 using FlashSale.Infrastructure.Messaging;
 using FlashSale.Infrastructure.Persistence;
@@ -69,6 +72,31 @@ public sealed class FlashSaleFixture : IAsyncLifetime
 
     public RedisStockGateway CreateRedisGateway(string? connectionString = null) =>
         new(ConnectionMultiplexer.Connect(connectionString ?? RedisConnectionString));
+
+    /// <summary>
+    /// The order processor wired to the REAL outbox (ADR-019): the order row
+    /// and its <c>order.created</c> event are written in one transaction.
+    /// </summary>
+    public OrderProcessor CreateOrderProcessor(AppDbContext db) =>
+        new(
+            new OrderRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            NullLogger<OrderProcessor>.Instance);
+
+    /// <summary>
+    /// The payment-recording use case wired to the REAL outbox (ADR-019): the
+    /// order status change and its payment/order events are written in one
+    /// transaction.
+    /// </summary>
+    public RecordPaymentUseCase CreateRecordPaymentUseCase(AppDbContext db) =>
+        new(
+            new PaymentRepository(db),
+            new OrderReadModel(db),
+            new AutomationRunRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            NullLogger<RecordPaymentUseCase>.Instance);
 
     public Task<RabbitMQOrderQueue> CreateRabbitQueueAsync(string queueName = "orders-test") =>
         RabbitMQOrderQueue.CreateAsync(RabbitMqConnectionString, queueName, NullLogger<RabbitMQOrderQueue>.Instance);

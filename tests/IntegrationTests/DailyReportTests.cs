@@ -1,3 +1,4 @@
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Automation;
 using FlashSale.Application.Messaging;
 using FlashSale.Application.Orders;
@@ -31,7 +32,11 @@ public sealed class DailyReportTests(FlashSaleFixture fx)
     private static async Task<int> PersistAsync(AppDbContext db, OrderMessage msg)
     {
         var repo = new OrderRepository(db);
-        await new OrderProcessor(repo, NullLogger<OrderProcessor>.Instance)
+        await new OrderProcessor(
+                repo,
+                new EfWriteTransaction(db),
+                new OutboxEventWriter(new OutboxRepository(db)),
+                NullLogger<OrderProcessor>.Instance)
             .ProcessAsync(msg, CancellationToken.None);
         return await repo.GetOrderIdAsync(msg.IdempotencyKey, CancellationToken.None) ?? 0;
     }

@@ -14,7 +14,13 @@ public sealed class PaymentRepository(AppDbContext db) : IPaymentRepository
 {
     public async Task<bool> CancelAndReleaseStockAsync(int orderId, CancellationToken ct = default)
     {
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        // ADR-019: join an ambient write transaction when there is one — the
+        // saga compensation writes the cancelled order, the restored stock and
+        // the compensation events in ONE transaction.
+        var ownsTransaction = db.Database.CurrentTransaction is null;
+        await using var tx = ownsTransaction
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
 
         // Status guard first: only a pending order can be cancelled — this is
         // what makes a duplicate/late scan a no-op instead of a double refund.
@@ -28,7 +34,11 @@ public sealed class PaymentRepository(AppDbContext db) : IPaymentRepository
             """, ct);
         if (cancelled == 0)
         {
-            await tx.RollbackAsync(ct);
+            if (tx is not null)
+            {
+                await tx.RollbackAsync(ct);
+            }
+
             return false;
         }
 
@@ -42,7 +52,11 @@ public sealed class PaymentRepository(AppDbContext db) : IPaymentRepository
               AND  p."Id" = o."ProductId"
             """, ct);
 
-        await tx.CommitAsync(ct);
+        if (tx is not null)
+        {
+            await tx.CommitAsync(ct);
+        }
+
         return true;
     }
 

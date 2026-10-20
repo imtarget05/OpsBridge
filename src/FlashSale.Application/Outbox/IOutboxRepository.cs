@@ -18,6 +18,8 @@ public interface IOutboxRepository
     /// <summary>
     /// Atomically leases eligible rows to one dispatcher. Multiple API replicas
     /// may poll concurrently without publishing the same row at the same time.
+    /// A lease that expires (dispatcher crash) makes the row claimable again —
+    /// nothing is stranded.
     /// </summary>
     Task<IReadOnlyList<OutboxMessage>> ClaimBatchAsync(
         Guid claimToken,
