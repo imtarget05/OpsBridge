@@ -214,12 +214,30 @@ public class AutomationEventProcessorTests
     private sealed class FakeInbox : IInboxRepository
     {
         public HashSet<(Guid MessageId, string Consumer)> Seen { get; } = new();
+        private readonly HashSet<(Guid MessageId, string Consumer)> _claimed = new();
 
         public Task<bool> HasBeenProcessedAsync(Guid messageId, string consumerName, CancellationToken ct = default)
             => Task.FromResult(Seen.Contains((messageId, consumerName)));
 
+        /// <summary>
+        /// ADR-019: the claim is taken BEFORE the side effects, so a
+        /// redelivery cannot apply them twice.
+        /// </summary>
+        public Task<bool> TryClaimAsync(Guid messageId, string consumerName, CancellationToken ct = default)
+        {
+            var key = (messageId, consumerName);
+            if (Seen.Contains(key) || _claimed.Contains(key))
+            {
+                return Task.FromResult(false);
+            }
+
+            _claimed.Add(key);
+            return Task.FromResult(true);
+        }
+
         public Task MarkProcessedAsync(Guid messageId, string consumerName, CancellationToken ct = default)
         {
+            _claimed.Remove((messageId, consumerName));
             Seen.Add((messageId, consumerName));
             return Task.CompletedTask;
         }

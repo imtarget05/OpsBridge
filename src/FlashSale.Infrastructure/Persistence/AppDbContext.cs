@@ -142,6 +142,9 @@ public class AppDbContext : DbContext
             entity.HasKey(i => new { i.MessageId, i.ConsumerName });
             entity.Property(i => i.ConsumerName).HasMaxLength(100);
             entity.HasIndex(i => i.ProcessedAt);
+            // The claim is what makes the dedup durable: the consumer claims the
+            // message id BEFORE it applies side effects.
+            entity.HasIndex(i => i.ClaimedAt);
         });
     }
 }

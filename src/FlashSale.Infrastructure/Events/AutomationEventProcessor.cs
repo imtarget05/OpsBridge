@@ -43,9 +43,15 @@ public sealed class AutomationEventProcessor(
         byte[] body, string? eventTypeHeader, CancellationToken ct = default)
     {
         var json = Encoding.UTF8.GetString(body);
-        var eventType = string.IsNullOrWhiteSpace(eventTypeHeader) ? EventTypeFrom(json) : eventTypeHeader;
 
-        var evt = DeserializeSafe(json, eventType);
+        // ADR-019: the canonical envelope carries event_type, event_id and the
+        // typed event as its payload. Legacy flat events are still accepted.
+        var envelope = EventEnvelope.TryParse(json);
+        var eventType = !string.IsNullOrWhiteSpace(eventTypeHeader)
+            ? eventTypeHeader
+            : envelope?.EventType ?? EventTypeFrom(json);
+
+        var evt = DeserializeSafe(envelope?.Payload ?? json, eventType);
         if (evt is null)
         {
             // Poison message: malformed body, or an event type this build does not
@@ -63,9 +69,15 @@ public sealed class AutomationEventProcessor(
 
         // At-least-once transports redeliver; without this the same event would
         // create a second audit run and re-apply its side effects.
-        var dedupeKey = TryParseMessageId(evt.EventId);
+        //
+        // ADR-019: the dedup key is the STABLE event_id of the envelope (the
+        // same id for every retry of the same outbox row), and the claim is
+        // durable — a unique-constraint insert in the inbox table, taken
+        // BEFORE the side effects. A redelivery therefore cannot apply them
+        // twice.
+        var dedupeKey = TryParseMessageId(envelope?.EventId ?? evt.EventId);
         if (dedupeKey is { } messageId
-            && await inbox.HasBeenProcessedAsync(messageId, ConsumerName, ct))
+            && !await inbox.TryClaimAsync(messageId, ConsumerName, ct))
         {
             logger.LogDebug(
                 "Skipping duplicate {EventType} {EventId} for consumer {Consumer}.",
@@ -102,9 +114,9 @@ public sealed class AutomationEventProcessor(
 
         await runs.UpdateAsync(run, ct);
 
-        // Recorded AFTER the audit row is persisted: if the process dies between
-        // the two, the redelivery re-audits (at-least-once) instead of silently
-        // dropping the fact that an event ever happened (at-most-once).
+        // The claim is turned into a processed record once the audit row is
+        // persisted: a redelivery then sees a completed inbox entry and skips
+        // the event instead of applying its side effects a second time.
         if (dedupeKey is { } key)
         {
             await inbox.MarkProcessedAsync(key, ConsumerName, ct);
@@ -188,6 +200,12 @@ public sealed class AutomationEventProcessor(
         "order.cancelled" => JsonSerializer.Deserialize<OrderCancelledEvent>(json),
         "inventory.released" => JsonSerializer.Deserialize<InventoryReleasedEvent>(json),
         "inventory.low_stock" => JsonSerializer.Deserialize<InventoryLowStockEvent>(json),
+        // ADR-019: the saga events are now part of the event stream (they are
+        // written to the outbox together with the saga state). They used to
+        // arrive without a handler and were dead-lettered as unreadable.
+        "checkout.saga.started" => JsonSerializer.Deserialize<CheckoutSagaStartedEvent>(json),
+        "checkout.saga.completed" => JsonSerializer.Deserialize<CheckoutSagaCompletedEvent>(json),
+        "checkout.saga.compensated" => JsonSerializer.Deserialize<CheckoutSagaCompensatedEvent>(json),
         _ => null
     };
 
@@ -199,6 +217,8 @@ public sealed class AutomationEventProcessor(
         OrderCancelledEvent or InventoryReleasedEvent or InventoryReservedEvent or InventoryLowStockEvent
             => AutomationWorkflow.InventoryAutomation.ToString(),
         OrderConfirmedEvent => AutomationWorkflow.OrderProcessing.ToString(),
+        CheckoutSagaStartedEvent or CheckoutSagaCompletedEvent or CheckoutSagaCompensatedEvent
+            => AutomationWorkflow.OrderProcessing.ToString(),
         _ => "unknown"
     };
 }
