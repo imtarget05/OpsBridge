@@ -1,7 +1,11 @@
+extern alias order;
+
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FlashSale.Application.Auth;
+
+using Program = order.Program;
 using FlashSale.Domain;
 using FlashSale.Domain.Entities;
 using Microsoft.AspNetCore.Mvc.Testing;
