@@ -31,3 +31,10 @@ backups/*
 # Python bytecode from repo scripts (never commit)
 __pycache__/
 *.pyc
+
+# CI job artefacts of the OpsBridge browser journey (never commit).
+# The job starts the API in the background and writes these two files at the
+# REPOSITORY ROOT (the artefact upload step references api.log root-relative),
+# so the ignore entries have to live HERE, not only in src/OpsBridge.Web/.gitignore.
+api.log
+api.pid

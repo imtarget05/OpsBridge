@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsbridge-api
+  labels:
+    app: opsbridge-api
+    project: opsbridge
+spec:
+  # ClusterIP (the default): the data tier and the internal API must stay
+  # unreachable from outside the cluster. Exposure to the outside world is an
+  # ingress concern, not a Service concern.
+  selector:
+    app: opsbridge-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

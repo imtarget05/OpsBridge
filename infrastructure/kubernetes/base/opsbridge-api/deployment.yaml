@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsbridge-api
+  labels:
+    app: opsbridge-api
+    project: opsbridge
+    role: api
+spec:
+  # Two replicas, like order-api. OpsBridge has no worker process: the API is the
+  # only long-running process in this bounded context (src/OpsBridge.Web is a
+  # browser front end, not a service).
+  replicas: 2
+  selector:
+    matchLabels:
+      app: opsbridge-api
+  template:
+    metadata:
+      labels:
+        app: opsbridge-api
+    spec:
+      # Same pod-level hardening as the rest of the tree (ADR-007): the image
+      # already runs as uid 1654, and declaring it here makes kubelet enforce it
+      # rather than trusting the image default.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+      containers:
+        - name: opsbridge-api
+          # Registry-neutral image NAME, the base convention: the prod overlay's
+          # `images:` transformer rewrites this to the pinned SHA. The image does
+          # NOT exist in any registry yet, which is why this directory is NOT
+          # referenced by infrastructure/kubernetes/base/kustomization.yaml — see
+          # README.md ("Adoption") for the exact steps that make it deployable.
+          image: opsbridge-api:placeholder-set-by-overlay
+          # container-level hardening (Trivy KSV-0014/KSV-0118): pod-level
+          # securityContext alone does not satisfy these checks.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            # readOnlyRootFilesystem=true means .NET's Path.GetTempPath()
+            # (/tmp on Linux) has to be writable or the runtime fails in a way
+            # that looks like an application bug. Same finding as order-api.
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: ASPNETCORE_URLS
+              value: http://+:8080
+            # The RUNTIME identity: DML rights only (SELECT/INSERT/UPDATE/DELETE).
+            # It deliberately cannot change the schema — ADR-018 requires the
+            # schema to be changed by the dedicated `--migrate` step, running
+            # with a separate DDL-capable identity, and never by the pod that
+            # serves traffic. `OpsBridge:AutoMigrate` is NOT set: it defaults to
+            # false, and the application REFUSES TO START in Production if it is
+            # enabled, so a runtime pod can never be a schema event.
+            - name: ConnectionStrings__OpsBridgeDb
+              valueFrom:
+                secretKeyRef:
+                  name: opsbridge-secrets
+                  key: pg-connection
+            # ADR-018 / ADR-013 §2: the JWT gate is in front of the HTTP
+            # endpoints, so the runtime identity DOES need a signing key. The
+            # signing key lives in the RUNTIME secret; the migration Job is not
+            # given it (the `--migrate` branch runs before the JWT validation
+            # block, so it needs no application credential at all).
+            - name: Jwt__SigningKey
+              valueFrom:
+                secretKeyRef:
+                  name: opsbridge-secrets
+                  key: jwt-signing-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              # OpsBridge.Api maps /healthz (src/OpsBridge.Api/Program.cs). It
+              # does NOT map the FlashSale-style /health/ready, so a readiness
+              # probe on that path would 404 forever and the Service would never
+              # publish this pod.
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}

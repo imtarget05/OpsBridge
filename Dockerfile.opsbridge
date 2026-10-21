@@ -1,0 +1,42 @@
+# Builds the OpsBridge bounded context's API (src/OpsBridge.Api).
+#
+# Before this file the repository had three images — order-api (Dockerfile),
+# payment-service (Dockerfile.payment) and order-worker (Dockerfile.worker) — and
+# NO image for OpsBridge.Api, even though OpsBridge.Api is a real service with a
+# real EF Core schema. Nothing could build or run `OpsBridge.Api.dll`, so the
+# `--migrate` deployment step described in ADR-018 had no artefact to run in.
+#
+# Same shape as the other three: a publish stage and a runtime stage, the runtime
+# image's built-in `app` user (uid 1654, ADR-007) and no shell-time privilege
+# escalation. The published output is owned by the app user so the pod can run
+# with runAsNonRoot + readOnlyRootFilesystem.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+# Restore layer: only the four project files that make up the OpsBridge API's
+# dependency graph (Api -> Infrastructure -> Application -> Domain) are copied
+# first, so `dotnet restore` is re-run only when a project file changes.
+COPY ["src/OpsBridge.Domain/OpsBridge.Domain.csproj", "src/OpsBridge.Domain/"]
+COPY ["src/OpsBridge.Application/OpsBridge.Application.csproj", "src/OpsBridge.Application/"]
+COPY ["src/OpsBridge.Infrastructure/OpsBridge.Infrastructure.csproj", "src/OpsBridge.Infrastructure/"]
+COPY ["src/OpsBridge.Api/OpsBridge.Api.csproj", "src/OpsBridge.Api/"]
+RUN dotnet restore "src/OpsBridge.Api/OpsBridge.Api.csproj"
+COPY . .
+WORKDIR "/src/src/OpsBridge.Api"
+# The EF Core migrations are compiled INTO this assembly (they live in
+# OpsBridge.Infrastructure, which the API references), so the migration Job and
+# the API are guaranteed to be the same artefact version — the same invariant
+# base/migration/job.yaml states for order-api.
+RUN dotnet publish "OpsBridge.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+EXPOSE 8080
+COPY --from=build /app/publish .
+# Non-root runtime (ADR-007): the aspnet base image ships an `app` user (uid
+# 1654). The published output is root-owned, so chown it before dropping
+# privileges; the pod then re-asserts runAsNonRoot/runAsUser in the manifest.
+RUN chown -R app:app /app
+USER app
+# Exec form. The migration Job passes `--migrate` as an ARG, which is appended to
+# this entrypoint: `dotnet OpsBridge.Api.dll --migrate`.
+ENTRYPOINT ["dotnet", "OpsBridge.Api.dll"]

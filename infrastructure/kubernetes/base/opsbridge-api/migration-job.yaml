@@ -1,0 +1,117 @@
+# OpsBridge schema-migration contract (ADR-018) — the schema is brought to head
+# BEFORE the OpsBridge API is allowed to roll.
+#
+# Why this is a separate Job and not a startup step: OpsBridge.Api refuses to
+# auto-migrate outside Development/Test (`OpsBridge:AutoMigrate` is off by
+# default, and the application THROWS on startup when it is enabled in
+# Production). So the schema is changed by exactly one artefact — this Job — and
+# never by a pod that serves traffic.
+#
+# The ordering contract, stated as the deployment rule:
+#
+#   1. `opsbridge-migrate` runs to completion (exit code 0) against the target
+#      database, and
+#   2. ONLY THEN may the `opsbridge-api` Deployment roll.
+#
+# Kubernetes has no "run this Job before those Deployments" primitive inside a
+# single apply, so the ordering is expressed the same way the FlashSale tree
+# expresses it (base/migration/job.yaml): the Job is applied and awaited, and the
+# Deployment is applied afterwards. See README.md ("Adoption") for the exact
+# order.
+#
+# The Job runs the SAME artefact as the Deployment — the migrations are compiled
+# into OpsBridge.Api.dll — so the schema step can never be a different version
+# of the schema than the code that will run against it.
+#
+# IDENTITY (the whole point of ADR-018): the Job uses a DDL-capable role
+# (secret `opsbridge-migrate-secrets`, key `pg-migration-connection`), while the
+# runtime Deployment uses a DML-only role (secret `opsbridge-secrets`, key
+# `pg-connection`). The runtime credential is deliberately NOT given to the Job
+# and the DDL credential is deliberately NOT given to the Deployment, so the
+# schema capability is confined to this one short-lived workload.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opsbridge-migrate
+  labels:
+    app: opsbridge-migrate
+    project: opsbridge
+    role: migration
+spec:
+  # Bounded retry: a migration that fails three times is a broken migration, not
+  # a transient fault. The default (6) would keep hammering a database that
+  # cannot apply the schema.
+  backoffLimit: 3
+  # Keep the finished pod around for one hour so the log evidence survives long
+  # enough to read, then garbage collect it.
+  ttlSecondsAfterFinished: 3600
+  # The Job name is fixed, so a re-sync of an unchanged commit does not stack a
+  # second concurrent migration.
+  completionMode: NonIndexed
+  template:
+    metadata:
+      labels:
+        app: opsbridge-migrate
+        role: migration
+    spec:
+      # Never reschedule the migration onto a second node while the first attempt
+      # may still hold the EF migration lock.
+      restartPolicy: Never
+      # Same identity as the API: both images publish as the built-in `app`
+      # user, uid 1654 (ADR-007). Trivy KSV-0012 asserts this at pod level.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+      containers:
+        - name: migrate
+          # Registry-neutral NAME, deliberately the SAME image as the Deployment:
+          # the migrations live in the app assembly, so the migration Job must be
+          # the exact artefact version being rolled out. The prod overlay
+          # `images:` transformer rewrites both to the same pinned SHA.
+          image: opsbridge-api:placeholder-set-by-overlay
+          # Exec-form ENTRYPOINT is ["dotnet", "OpsBridge.Api.dll"], so these
+          # args append to it: `dotnet OpsBridge.Api.dll --migrate`. That branch
+          # in src/OpsBridge.Api/Program.cs applies the pending EF migrations and
+          # exits with the ADR-018 exit-code contract (0 = success or already at
+          # head, 1 = failure, 2 = drift detected) without ever touching the
+          # HTTP host.
+          args:
+            - "--migrate"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            # PostgreSQL ONLY, and specifically the DDL-capable credential: the
+            # runtime's DML credential is NOT given here (see the header). Redis
+            # and the queue are absent on purpose: a schema step must not be
+            # blocked by a broker, and OpsBridge has neither.
+            - name: ConnectionStrings__OpsBridgeDb
+              valueFrom:
+                secretKeyRef:
+                  name: opsbridge-migrate-secrets
+                  key: pg-migration-connection
+            # Stated explicitly rather than inherited from the empty default. The
+            # `--migrate` branch returns before the JWT validation block, so the
+            # Job needs NO application credential (no signing key) — that is the
+            # "separate DDL step with its own identity" shape of ADR-018.
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+          volumeMounts:
+            # readOnlyRootFilesystem=true means .NET's Path.GetTempPath()
+            # (/tmp on Linux) has to be writable or the runtime fails in a way
+            # that looks like an application bug (same finding as the API pod).
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

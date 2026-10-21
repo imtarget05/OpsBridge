@@ -159,6 +159,173 @@ jobs:
           path: test-results/opsbridge/
           if-no-files-found: ignore
 
+  # ---------------------------------------------------------------------------
+  # OpsBridge browser journey (Playwright). Added 2026-10-20 after AI-0 found the
+  # other half of the REQ-17 gap: `src/OpsBridge.Web/playwright.config.ts` and a
+  # spec existed, but NO CI job ever executed them — the journey had never run,
+  # so it proved nothing. 881 unit/integration tests were green while not a
+  # single test went from a click in the browser to a row in PostgreSQL.
+  #
+  # This job closes that gap: real API, real PostgreSQL (a service container,
+  # the same postgres:15-alpine image the integration suites use), real browser.
+  # It is wired into ci-gate, so a red journey blocks the PR.
+  #
+  # Design notes that are load-bearing, not decoration:
+  #   * The schema is applied with the `--migrate` deployment entrypoint
+  #     (ADR-018, commit a1025cb) — never with EnsureCreated. The entrypoint
+  #     runs BEFORE the JWT gate, so it needs only the connection string and no
+  #     signing key, and it is exactly what a deployment would do.
+  #   * ASPNETCORE_ENVIRONMENT=Development is required: the demo login endpoint
+  #     (POST /api/v1/auth/login) is only mapped in Development/Test
+  #     (src/OpsBridge.Api/Endpoints/AuthEndpoints.cs). A production-shaped
+  #     journey would need a real identity provider.
+  #   * The API listens on 127.0.0.1:5000 because the Vite dev server proxies
+  #     /api to http://127.0.0.1:5000 (src/OpsBridge.Web/vite.config.ts) and
+  #     Playwright's webServer starts that dev server on 127.0.0.1:5173. The
+  #     proxy target is the literal IPv4 address on purpose: "localhost" can
+  #     resolve to the IPv6 loopback, and on macOS the AirPlay receiver owns
+  #     [::1]:5000 - which is why the job used to need
+  #     NODE_OPTIONS=--dns-result-order=ipv4first to make the hop work at all.
+  # ---------------------------------------------------------------------------
+  opsbridge-web-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Same image as the integration suites / the concurrency harness.
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: OpsBridgeDb
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d OpsBridgeDb"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      # Only PostgreSQL is needed: the OpsBridge DI registers repositories and
+      # the messaging provider is not registered at all.
+      ConnectionStrings__OpsBridgeDb: Host=localhost;Port=5432;Database=OpsBridgeDb;Username=postgres;Password=postgres
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://127.0.0.1:5000
+    steps:
+      # Pin the exact commit under test instead of the merge commit: the job
+      # must prove the PR head, not whatever the merge result happens to be.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record the commit under test
+        run: |
+          echo "### OpsBridge browser journey (Playwright)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit under test: \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- requested ref: \`${{ github.event.pull_request.head.sha || github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API: \`OpsBridge.Api\` (Release, Development, 127.0.0.1:5000)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- database: \`OpsBridgeDb\` on postgres:15-alpine (fresh per run)" >> "$GITHUB_STEP_SUMMARY"
+      # Node version taken from the repository's own engine constraint:
+      # src/OpsBridge.Web/package-lock.json pins vite 8 / @vitejs/plugin-react 6 /
+      # oxlint to "node": "^20.19.0 || >=22.12.0" — Node 22 (LTS) satisfies it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/OpsBridge.Web/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build OpsBridge.Api (Release)
+        run: dotnet build src/OpsBridge.Api/OpsBridge.Api.csproj -c Release
+      - name: Apply the schema with the --migrate entrypoint (ADR-018)
+        # Exit codes: 0 = applied or already at head, 1 = failure, 2 = drift.
+        run: dotnet src/OpsBridge.Api/bin/Release/net10.0/OpsBridge.Api.dll --migrate
+      - name: Start the API in the background
+        run: |
+          nohup dotnet src/OpsBridge.Api/bin/Release/net10.0/OpsBridge.Api.dll > api.log 2>&1 &
+          echo $! > api.pid
+      - name: Wait for /healthz (bounded retries, never a fixed sleep)
+        # The first request to a cold .NET process pays the JIT cost (measured:
+        # ~9.5 s for the very first /healthz), so the COLD-START BUDGET in the
+        # script is 30 s - about 3x the measured value, which still leaves room
+        # on a loaded runner and still fails a cold start that regressed to
+        # 60 s. The old inline version used `curl --max-time 120`, so such a
+        # regression was accepted here and only surfaced later as a confusing
+        # timeout inside the browser run.
+        run: |
+          if ! bash scripts/opsbridge-wait-for-api.sh; then
+            echo "::group::api.log"
+            tail -80 api.log || true
+            echo "::endgroup::"
+            exit 1
+          fi
+      - name: Warm the API before the browser run
+        # The first request per code path pays JIT + EF query compilation. The
+        # existing spec asserts the post-login URL with Playwright's default 5 s
+        # expectation timeout, so that cost has to be paid HERE (in the job, with
+        # no assertion attached) instead of inside the browser run.
+        #
+        # The script also owns the BUDGETS (per request and for the whole
+        # phase) and fails the job with a diagnostic when they are exceeded -
+        # a cold start that regressed to 60 s used to pass the warm-up (the
+        # old curl timeout was 120 s) and then failed the browser run with a
+        # confusing timeout instead of the real diagnosis. The budgets and
+        # their reasoning are documented in scripts/opsbridge-warmup-api.sh.
+        run: bash scripts/opsbridge-warmup-api.sh
+      - name: Install the web dependencies
+        working-directory: src/OpsBridge.Web
+        run: npm ci
+      - name: Type-check the Playwright specs
+        # The specs used to belong to NO tsconfig: tsconfig.app.json included
+        # only `src` and tsconfig.node.json only `vite.config.ts`, so
+        # `npm run build` never type-checked e2e/ and Playwright's esbuild
+        # transpile ignores type errors - a type error in a spec would have
+        # shipped silently. tsconfig.e2e.json now owns e2e/ + playwright.config.ts
+        # and is referenced from tsconfig.json, so `npm run build` covers it
+        # too; this step makes the intent explicit and fails fast.
+        working-directory: src/OpsBridge.Web
+        run: npm run typecheck:e2e
+      - name: Build the web app (tsc -b && vite build)
+        # The frontend had no build gate in CI at all: no other job compiles
+        # src/OpsBridge.Web. The browser journey below runs the dev server, so a
+        # broken build would otherwise only surface as a confusing test failure.
+        working-directory: src/OpsBridge.Web
+        run: npm run build
+      - name: Install the Playwright browser (chromium)
+        working-directory: src/OpsBridge.Web
+        run: npx playwright install --with-deps chromium
+      - name: Run the browser journey
+        # --workers=1: the runner's CPU is shared with the API and the database,
+        # and the existing spec asserts the post-login URL with a 5 s timeout.
+        # --reporter=html,line writes the HTML report into playwright-report/ so
+        # the artefact below contains the failure detail.
+        # NO NODE_OPTIONS=--dns-result-order=ipv4first any more: the Vite dev
+        # server proxies /api to http://127.0.0.1:5000 (the literal IPv4
+        # address, see vite.config.ts), so the hop no longer depends on the
+        # resolver preferring IPv4. With the old "localhost" target the hop
+        # only worked on a runner where "localhost" happened to resolve to
+        # IPv4 - on macOS the AirPlay receiver owns [::1]:5000, and the flag
+        # was load-bearing there (4/4 tests failed without it).
+        working-directory: src/OpsBridge.Web
+        run: npx playwright test --workers=1 --reporter=html,line
+      - name: Upload the Playwright report, traces and the API log
+        # always(): a red journey is only diagnosable with its artefacts.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opsbridge-web-e2e
+          path: |
+            src/OpsBridge.Web/playwright-report/
+            src/OpsBridge.Web/test-results/
+            api.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stop the API
+        # always(): no orphan process may hold the runner.
+        if: always()
+        run: |
+          if [ -f api.pid ]; then
+            kill "$(cat api.pid)" 2>/dev/null || true
+            wait "$(cat api.pid)" 2>/dev/null || true
+            rm -f api.pid
+          fi
+
   concurrency-harness:
     runs-on: ubuntu-latest
     services:
@@ -561,6 +728,7 @@ jobs:
       - build-and-unit
       - integration-tests
       - opsbridge-tests
+      - opsbridge-web-e2e
       - concurrency-harness
       - security-scan
       - docker-build-scan
@@ -573,6 +741,7 @@ jobs:
           echo "build-and-unit       = ${{ needs.build-and-unit.result }}"
           echo "integration-tests    = ${{ needs.integration-tests.result }}"
           echo "opsbridge-tests      = ${{ needs.opsbridge-tests.result }}"
+          echo "opsbridge-web-e2e    = ${{ needs.opsbridge-web-e2e.result }}"
           echo "concurrency-harness  = ${{ needs.concurrency-harness.result }}"
           echo "security-scan        = ${{ needs.security-scan.result }}"
           echo "docker-build-scan    = ${{ needs.docker-build-scan.result }}"
@@ -581,6 +750,7 @@ jobs:
           [ "${{ needs.build-and-unit.result }}"      = "success" ] || { echo "GATE FAIL: build-and-unit";      fail=1; }
           [ "${{ needs.integration-tests.result }}"   = "success" ] || { echo "GATE FAIL: integration-tests";   fail=1; }
           [ "${{ needs.opsbridge-tests.result }}"     = "success" ] || { echo "GATE FAIL: opsbridge-tests";     fail=1; }
+          [ "${{ needs.opsbridge-web-e2e.result }}"   = "success" ] || { echo "GATE FAIL: opsbridge-web-e2e";   fail=1; }
           [ "${{ needs.concurrency-harness.result }}" = "success" ] || { echo "GATE FAIL: concurrency-harness"; fail=1; }
           [ "${{ needs.security-scan.result }}"       = "success" ] || { echo "GATE FAIL: security-scan";       fail=1; }
           [ "${{ needs.docker-build-scan.result }}"   = "success" ] || { echo "GATE FAIL: docker-build-scan";   fail=1; }

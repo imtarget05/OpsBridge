@@ -37,7 +37,7 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
 
         var getResponse = await client.GetAsync("/api/v1/purchase-orders/PO-INT-100");
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
-        var po = await getResponse.Content.ReadFromJsonAsync<PurchaseOrder>();
+        var po = await getResponse.Content.ReadOpsBridgeJsonAsync<PurchaseOrder>();
         Assert.NotNull(po);
         Assert.Equal("PO-INT-100", po.OrderNumber);
         Assert.Equal(2000000m, po.TotalAmount); // 100 * 20,000
@@ -128,14 +128,14 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
         );
         var invResp = await client.PostAsJsonAsync("/api/v1/invoices", invRequest);
         Assert.Equal(HttpStatusCode.Created, invResp.StatusCode);
-        var createdInvoice = await invResp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var createdInvoice = await invResp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
         Assert.NotNull(createdInvoice);
 
         // Step 4: Run initial 3-way match
         var matchReq1 = new RunReconciliationRequest(InvoiceId: createdInvoice.Id);
         var matchResp1 = await client.PostAsJsonAsync("/api/v1/reconciliation/run", matchReq1);
         Assert.Equal(HttpStatusCode.OK, matchResp1.StatusCode);
-        var result1 = await matchResp1.Content.ReadFromJsonAsync<ReconciliationResult>();
+        var result1 = await matchResp1.Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
         Assert.NotNull(result1);
         Assert.Equal(MatchStatus.Discrepancy, result1.Status);
         Assert.Contains(result1.Discrepancies, d => d.Type == DiscrepancyType.QuantityMismatch && d.VarianceAmount == 10m);
@@ -155,7 +155,7 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
         var matchReq2 = new RunReconciliationRequest(InvoiceId: createdInvoice.Id);
         var matchResp2 = await client.PostAsJsonAsync("/api/v1/reconciliation/run", matchReq2);
         Assert.Equal(HttpStatusCode.OK, matchResp2.StatusCode);
-        var result2 = await matchResp2.Content.ReadFromJsonAsync<ReconciliationResult>();
+        var result2 = await matchResp2.Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
         Assert.NotNull(result2);
         Assert.Equal(MatchStatus.Matched, result2.Status);
         Assert.Empty(result2.Discrepancies);
@@ -215,7 +215,7 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
             SourceSystem: "Test",
             Lines: [new CreateSupplierInvoiceLineRequest(1, "RM-CONCUR", "Material", 70m, "PCS", 20000m, 0m)]
         ));
-        var inv1 = await inv1Resp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var inv1 = await inv1Resp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
 
         var inv2Resp = await client.PostAsJsonAsync("/api/v1/invoices", new CreateSupplierInvoiceRequest(
             InvoiceNumber: "INV-C2",
@@ -227,7 +227,7 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
             SourceSystem: "Test",
             Lines: [new CreateSupplierInvoiceLineRequest(1, "RM-CONCUR", "Material", 70m, "PCS", 20000m, 0m)]
         ));
-        var inv2 = await inv2Resp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var inv2 = await inv2Resp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
 
         // Fire both reconciliation runs
         var task1 = client.PostAsJsonAsync("/api/v1/reconciliation/run", new RunReconciliationRequest(InvoiceId: inv1!.Id));
@@ -236,8 +236,8 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
         var responses = await Task.WhenAll(task1, task2);
         Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
 
-        var res1 = await responses[0].Content.ReadFromJsonAsync<ReconciliationResult>();
-        var res2 = await responses[1].Content.ReadFromJsonAsync<ReconciliationResult>();
+        var res1 = await responses[0].Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
+        var res2 = await responses[1].Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
 
         // Exactly one must be Matched, and the other must have a QuantityMismatch discrepancy
         var matchedCount = (res1!.Status == MatchStatus.Matched ? 1 : 0) + (res2!.Status == MatchStatus.Matched ? 1 : 0);
@@ -291,11 +291,11 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
             SourceSystem: "Portal",
             Lines: [new CreateSupplierInvoiceLineRequest(1, "RM-008", "Material", 100m, "PCS", 25000m, 0m)]
         ));
-        var invoice = await invResp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var invoice = await invResp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
 
         // Reconcile -> creates PriceMismatch discrepancy
         var runResp = await client.PostAsJsonAsync("/api/v1/reconciliation/run", new RunReconciliationRequest(InvoiceId: invoice!.Id));
-        var runResult = await runResp.Content.ReadFromJsonAsync<ReconciliationResult>();
+        var runResult = await runResp.Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
         Assert.Equal(MatchStatus.Discrepancy, runResult!.Status);
         var disc = Assert.Single(runResult.Discrepancies);
 
@@ -322,7 +322,7 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
         // Verify audit trail in PostgreSQL
         var auditResp = await financeClient.GetAsync("/api/v1/reconciliation/audit-trail");
         Assert.Equal(HttpStatusCode.OK, auditResp.StatusCode);
-        var auditEvents = await auditResp.Content.ReadFromJsonAsync<List<AuditEvent>>();
+        var auditEvents = await auditResp.Content.ReadOpsBridgeJsonAsync<List<AuditEvent>>();
         Assert.NotNull(auditEvents);
         Assert.Contains(auditEvents, a => a.EntityType == "Discrepancy" && a.UserId.StartsWith("int-", StringComparison.Ordinal));
     }
@@ -364,11 +364,11 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
             SourceSystem: "Portal",
             Lines: [new CreateSupplierInvoiceLineRequest(1, "RM-008", "Material", 100m, "PCS", 21000m, 0m)]
         ));
-        var invoice = await invResp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var invoice = await invResp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
 
         // 4. Reconcile -> PriceMismatch Discrepancy
         var runResp = await client.PostAsJsonAsync("/api/v1/reconciliation/run", new RunReconciliationRequest(InvoiceId: invoice!.Id));
-        var runResult = await runResp.Content.ReadFromJsonAsync<ReconciliationResult>();
+        var runResult = await runResp.Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
         Assert.Equal(MatchStatus.Discrepancy, runResult!.Status);
         var disc = Assert.Single(runResult.Discrepancies);
 
@@ -431,11 +431,11 @@ public class ReconciliationIntegrationTests(OpsBridgeFixture fixture)
             SourceSystem: "Portal",
             Lines: [new CreateSupplierInvoiceLineRequest(1, "RM-008", "Material", 100m, "PCS", 30000m, 0m)]
         ));
-        var invoice = await invResp.Content.ReadFromJsonAsync<SupplierInvoice>();
+        var invoice = await invResp.Content.ReadOpsBridgeJsonAsync<SupplierInvoice>();
 
         // 4. Reconcile
         var runResp = await client.PostAsJsonAsync("/api/v1/reconciliation/run", new RunReconciliationRequest(InvoiceId: invoice!.Id));
-        var runResult = await runResp.Content.ReadFromJsonAsync<ReconciliationResult>();
+        var runResult = await runResp.Content.ReadOpsBridgeJsonAsync<ReconciliationResult>();
         var disc = Assert.Single(runResult!.Discrepancies);
 
         // 5. Review decision: Rejected by FinanceReviewer JWT

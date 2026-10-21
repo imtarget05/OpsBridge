@@ -5,6 +5,7 @@ using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using OpsBridge.Api;
 using OpsBridge.Api.Auth;
 using OpsBridge.Api.Endpoints;
 using OpsBridge.Infrastructure;
@@ -130,6 +131,26 @@ if (autoMigrateEnabled && !isLocalEnvironment)
         "(SELECT/INSERT/UPDATE/DELETE) and must never be able to change the schema. " +
         "Disable OpsBridge:AutoMigrate outside Development and Test.");
 }
+
+// ------------------------------------------------------------------
+// JSON wire contract: an enum travels as its NAME, never as its ordinal.
+//
+// The reasoning (and the white screen this fixed) is documented on
+// OpsBridgeJsonContract; the short version: the web client declares and
+// SENDS enums as names, System.Text.Json's default writes and reads them as
+// numbers, and the two halves of the product disagreed on the wire.
+//
+// The change is strictly additive for requests (the converter still reads
+// integers) and a documented response-shape change for responses:
+// "status": 1 -> "status": "PendingReconciliation".
+//
+// The converter is applied globally rather than per DTO so that a new enum
+// cannot silently ship as a number.
+// ------------------------------------------------------------------
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(OpsBridgeJsonContract.EnumConverter);
+});
 
 // ------------------------------------------------------------------
 // Clean Architecture Composition Root: OpsBridge API
