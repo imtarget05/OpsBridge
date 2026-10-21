@@ -1,9 +1,14 @@
-# ADR-019: Enums cross the API boundary as names, not ordinals
+# ADR-021: Enums cross the API boundary as names, not ordinals
 
 - **Status**: Accepted
 - **Date**: 2026-10-20
 - **Supersedes**: nothing. Extends ADR-017 (OpsBridge bounded context) and is
   independent of ADR-018 (migration strategy).
+- **Numbering note (2026-10-21)**: this ADR was originally filed as
+  `019-enums-cross-the-api-boundary-as-names.md` and collided with ADR-019
+  (*Transactional Outbox for the business write path*). It was **renumbered to
+  ADR-021**; `019` stays with the transactional outbox. **No decision, evidence
+  or wording was changed** — only the number and the file name.
 
 ## Context
 
