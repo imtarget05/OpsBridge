@@ -1,4 +1,21 @@
-﻿# Recruiter Evidence — FlashSale-Backend
+﻿# Recruiter Evidence — OpsBridge (FlashSale order reliability + OpsBridge operations)
+
+> **Repository note (2026-10-21).** This audit was performed against the
+> **FlashSale** bounded context and is kept verbatim below, with its original
+> file/line citations and its original test counts. It now lives in
+> `imtarget05/OpsBridge`, which **shares its full commit history** with
+> `imtarget05/FlashSale-Backend`: the FlashSale order-reliability context and
+> the OpsBridge event-driven operations context are both in this tree **by
+> design** (ADR-017 bounded contexts, ADR-018 migration and legacy baseline).
+> The **FlashSale-only** lineage stays at
+> <https://github.com/imtarget05/FlashSale-Backend>; the OpsBridge lineage
+> continues here. The repository-wide evidence index is GitHub issue #1; the
+> short form is [`../RECRUITER-EVIDENCE.md`](../RECRUITER-EVIDENCE.md).
+>
+> **Scope of this document:** the FlashSale context as it stood when the audit
+> was run (below). The OpsBridge context has its own evidence files —
+> `docs/evidence/ci-verification.md`, `docs/known-issues.md`,
+> `docs/requirements/` — and its own decisions (ADR-017 to ADR-021).
 
 Every claim below was checked by opening the cited file, confirming the line number, and
 running the stated command on this machine. Where a claim could not be reproduced, it says so.
@@ -26,6 +43,39 @@ RESULT: PASS - inventory conserved (no overselling, no lost updates).
   200 accepted: 10 | 4xx rejected: 40 {'409': 40} | transport failures: 0
   initial stock 10 | accepted units 10 | expected stock 0 | final stock in DB 0 | orders created 10
 ```
+
+---
+
+## Verified / Not verified
+
+**Verified** — each row points at an artefact a reviewer can open:
+
+| Claim | Evidence |
+|---|---|
+| The zero-oversell invariant — 50 concurrent buyers / 10 units → 10 orders persisted, 40 × 409, final stock 0 — is **enforced on every push** | `.github/workflows/ci.yml` → job `concurrency-harness` fails the build unless the harness prints `RESULT: PASS` |
+| The FlashSale unit + integration suites were green when this audit ran them (108 unit / 31 integration, as printed above) | the command output in this document; re-run for current numbers |
+| OpsBridge unit / contract / integration suites green (41 / 7 / 22 = 70 / 70) | `docs/evidence/ci-verification.md` (commit `1ecd302`) |
+| Business-path domain events are written through a **transactional outbox** instead of a best-effort publish to the broker | `docs/adr/019-transactional-outbox.md`, `docs/findings/outbox-gap.md` |
+| Clean-Architecture dependency direction is an **executable** rule that fails the build, not a convention | `tests/UnitTests/ArchitectureTests.cs` |
+| Local docker compose stack healthy — 6 containers (2026-10-21), with a negative test (stop RabbitMQ → worker reports `unhealthy`, recovers on its own) | `docs/known-issues.md` |
+| Outbox/Inbox live behaviour (a ~20-minute broker outage ends in DLQ, `/api/outbox/requeue` revives it, 5× duplicate `MessageId` → 1 inbox row), saga 21/21 live, 3 backup/restore drills | `docs/evidence/v2/outbox-inbox-2026-09-24.md`, `docs/evidence/saga/`, `docs/evidence/backup/` |
+
+**Not verified — do not claim these:**
+
+| Claim | Status |
+|---|---|
+| A real payment service provider | **Never exercised.** The local payment service is a simulation returning `sim_tx_…`; no PSP contract, credential or behaviour exists anywhere in this repository. |
+| The Kubernetes `prod` overlay as a running system | **Configuration, not a deployed system** — it has not been applied to a real AKS cluster (`docs/adr/020-opsbridge-web-deployment-and-client-token-risk.md`, `docs/evidence/kubernetes/phase7c-readiness.md`). |
+| Latency figures (p95 29 ms tiered / 574 ms naive) | **Local single runs, not CI gates.** Only the zero-oversell invariant is CI-enforced; re-measure before quoting a number. |
+| A production database shape | **None.** The schema is verified *from empty* (every integration fixture runs `EnsureDeletedAsync` + `MigrateAsync`) against local PostgreSQL — no production dataset, volume or query-plan evidence. |
+| The optimistic-concurrency `Version` token | **Declared but never exercised** by any test (stated in this document, above). |
+| Pod-level liveness/readiness for the worker | **Absent by decision** — container-level healthcheck only (`docs/known-issues.md`). |
+| `/api/v1/auth/login` as authentication | **A local demo persona selector**, mapped only in Development/Test; there is no external identity provider (ADR-017). |
+
+> This document is an **index of evidence, not a production-readiness claim**. The
+> two sections below record the audit exactly as it was performed; where a later
+> decision changed the code, that decision is named in the note above the
+> section rather than by rewriting the audit.
 
 ---
 
@@ -111,6 +161,19 @@ RESULT: PASS - inventory conserved (no overselling, no lost updates).
 ---
 
 ## Known Security Issues (must fix before showcasing)
+
+> **Superseded in part — recorded 2026-10-21.** This section is the audit's
+> finding **as it stood when the audit ran**; it is kept verbatim, because the
+> finding was real at the time. The authorization gap it describes was closed
+> later by **ADR-013** (auth design): `/internal/**`, `/api/outbox/**` and
+> `POST /api/inbox/consume` now require `StaffOrAdmin`, the mutating customer
+> routes are authenticated and owner-scoped, and a source-level guard
+> (`tests/UnitTests/EndpointAuthorizationGuardTests.cs`, with integration
+> coverage in `tests/IntegrationTests/EndpointAuthorizationTests.cs`) fails the
+> build if a route is mapped without a policy. The seeded STAFF credential is
+> now opt-in via `Bootstrap:StaffPassword` — see the bootstrap section of the
+> repository `README.md`. **Re-read the current source before repeating either
+> finding as if it were still open.**
 
 Neither of these belongs on a CV. Both are verified findings, listed so you are not caught out if a reviewer runs the app.
 

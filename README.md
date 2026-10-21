@@ -1,15 +1,72 @@
-# Flash-Sale Reliability Platform
+# OpsBridge — Order Reliability (FlashSale) + Event-Driven Operations
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql)](https://postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-Cache-DC382D?logo=redis)](https://redis.io/)
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Messaging-FF6600?logo=rabbitmq)](https://rabbitmq.com/)
 
+**This repository contains two products in one tree.**
+
+| Product | What it is | Code | Decision record |
+|---|---|---|---|
+| **FlashSale — order reliability** | A flash-sale order platform whose load-bearing claim is a **zero-oversell invariant**: 50 buyers race for 10 units → exactly 10 orders persist, 40 get honest fast-fails. | `src/FlashSale.*`, `src/Order.Api`, `src/Order.Worker`, `src/Payment.Service` | `docs/adr/001-016`, `docs/adr/019` |
+| **OpsBridge — event-driven operations** | An operations context that owns supplier ingestion, procurement snapshots, reconciliation (allocations / discrepancies), staff decisions and DLQ replay audit. It never writes FlashSale order state directly. | `src/OpsBridge.Api`, `src/OpsBridge.Application`, `src/OpsBridge.Domain`, `src/OpsBridge.Infrastructure`, `src/OpsBridge.Web` | `docs/adr/017`, `docs/adr/018`, `docs/adr/020`, `docs/adr/021` |
+
+> **Repository note — one history, two names.** `imtarget05/OpsBridge` was created
+> from `imtarget05/FlashSale-Backend` and currently **shares the full commit
+> history** with it, so both bounded contexts live in one repository **by
+> design** (ADR-017 bounded contexts, ADR-018 migration and legacy baseline).
+> They are separate *contexts*, not separate repositories, and each product's
+> evidence is filed separately:
+>
+> - **FlashSale** → `docs/RECRUITER-EVIDENCE.md`, `docs/benchmarks/`, `docs/findings/`, `docs/adr/001-016` + `docs/adr/019`
+> - **OpsBridge** → `docs/evidence/ci-verification.md`, `docs/known-issues.md`, `docs/requirements/`, `docs/adr/017-018`, `docs/adr/020-021`
+>
+> If the history is ever split, the **FlashSale-only** lineage stays at
+> **<https://github.com/imtarget05/FlashSale-Backend>** and the **OpsBridge**
+> lineage continues here. Nothing in this README depends on which name the
+> repository carries.
+
+## 📦 Product 1 — FlashSale: order reliability under concurrency
+
 A portfolio-grade, event-driven backend built to handle high-concurrency "flash sale" scenarios. The core engineering challenge is processing thousands of simultaneous purchase attempts for limited inventory without overselling, while keeping latency low and the database healthy.
 
 > **Role:** Backend Engineer (C# / .NET 10, PostgreSQL, Redis, RabbitMQ).
 > **One-liner for HR:** I built an order system where 50 buyers race for 10 items — exactly 10 sales succeed, 40 get honest fast-fails. That invariant is re-checked on every CI run (the `concurrency-harness` job fails the build unless the harness prints `RESULT: PASS`); the latency figures quoted below are single local runs, not a CI gate.
 > **For Tech Lead:** Clean Architecture (Domain <- Application <- Infrastructure <- Api/Worker) with dependency-direction guards in `tests/UnitTests/ArchitectureTests.cs`. Evidence in `docs/benchmarks/` + `docs/adr/001-005`.
+
+## 📦 Product 2 — OpsBridge: event-driven operations
+
+The operational half of the platform, kept in its own bounded context so that
+operational work can never mutate authoritative order state (ADR-017).
+
+| Concern | Decision | Where to verify |
+|---|---|---|
+| Ownership | OpsBridge owns FactoryFlow ingestion, procurement snapshots, reconciliation allocations/discrepancies, staff decisions and DLQ replay audit — **not** FlashSale orders, payments or inventory. A cross-context change must go through a versioned contract, never a shared database write. | `docs/adr/017-opsbridge-bounded-context-foundation.md` |
+| Data access | OpsBridge persists **only** through its own `OpsBridgeDbContext`; EF Core adapters stay in Infrastructure, API endpoints depend on Application use cases and repository ports. | `docs/adr/017`, `src/OpsBridge.Infrastructure/` |
+| Staff authorization | Roles `Operator`, `Admin`, `Auditor`, `FinanceReviewer` come from a trusted JWT. Unauthenticated staff routes → 401, authenticated-but-out-of-policy → 403, and connector secrets never appear in responses. | `docs/adr/017`, `src/OpsBridge.Api/Endpoints/` |
+| API contract | One global `JsonStringEnumConverter` owns the JSON contract, so an enum cannot ship as an ordinal by omission; the integration-test client binds with the same options. | `docs/adr/021-enums-cross-the-api-boundary-as-names.md` |
+| Web tier | `src/OpsBridge.Web` (browser journey) is a CI gate, and its deployment shape plus the client-side token risk are recorded as one explicit decision with the risk stated plainly. | `docs/adr/020-opsbridge-web-deployment-and-client-token-risk.md`, `infrastructure/kubernetes/base/opsbridge-web/` |
+| Schema changes | OpsBridge has its own PostgreSQL database and its own EF Core migration. The schema is changed **only** by the dedicated `OpsBridge.Api --migrate` step, under a separate DDL-capable identity — the runtime identity holds DML rights only. | `docs/adr/018-opsbridge-migration-and-legacy-baseline-strategy.md` |
+
+**Recorded OpsBridge test evidence** (`docs/evidence/ci-verification.md`, commit
+`1ecd302`): unit **41**, contract **7**, integration **22** (Testcontainers,
+PostgreSQL) — **70 / 70 passing** in that recorded run. Re-run the suites for
+current numbers.
+
+**Stated plainly, so nothing here is over-read** (the same list is maintained in
+`docs/known-issues.md` and in issue #1 of this repository):
+
+- `POST /api/v1/auth/login` is a **local demo persona selector**, mapped only in
+  Development/Test — it is **not** credential authentication and there is no
+  external identity provider (ADR-017).
+- The payment service in the local runs is a **simulation** (`sim_tx_…`); no real
+  PSP contract, credential or behaviour is exercised anywhere in this repository.
+- The Kubernetes `prod` overlay is **configuration, not a deployed system** — it
+  has not been applied to a real AKS cluster (ADR-020, `docs/evidence/kubernetes/phase7c-readiness.md`).
+- The worker has a **container-level healthcheck** but no Pod-level
+  liveness/readiness probe; a Pod probe would need a real health endpoint, and
+  that decision was explicitly not taken (`docs/known-issues.md`).
 
 ## 🧠 Skills Demonstrated (scan in 30s)
 
@@ -22,6 +79,9 @@ A portfolio-grade, event-driven backend built to handle high-concurrency "flash 
 | Authorization | `StaffOrAdmin` closed every ops endpoint; a source-level guard fails the build if a route is mapped without a policy | `tests/UnitTests/EndpointAuthorizationGuardTests.cs`, `tests/IntegrationTests/EndpointAuthorizationTests.cs` |
 | Operability | pg_dump -Fc backup + SHA-256 + restore smoke test | `docs/adr/008-009-*` |
 | Architecture discipline | Port + adapter for every infra addition; thin `Program.cs` | `src/FlashSale.Application/`, `tests/UnitTests/ArchitectureTests.cs` |
+| Bounded contexts | OpsBridge owns ingestion / reconciliation / staff review **without** touching FlashSale order state; route roles enforced in code, not by convention | `docs/adr/017-opsbridge-bounded-context-foundation.md`, `src/OpsBridge.Api/Endpoints/` |
+| Contract discipline | One global JSON enum contract (names, not ordinals), bound by the test client as well | `docs/adr/021-enums-cross-the-api-boundary-as-names.md`, `src/OpsBridge.Api/OpsBridgeJsonContract.cs` |
+| Browser as a gate | The OpsBridge browser journey (click → row in PostgreSQL) is wired into `ci-gate`, so a red journey blocks the PR | `.github/workflows/ci.yml` → `opsbridge-web-e2e` |
 
 ## 🔍 Problem → Decision → Tradeoff (how I think)
 
@@ -219,7 +279,21 @@ src/
 ├── FlashSale.Application/    # Use Cases & Ports (Interfaces)
 ├── FlashSale.Infrastructure/ # Adapters (EF Core, Redis, RabbitMQ)
 ├── Order.Api/                # Presentation Layer (API endpoints)
-└── Order.Worker/             # Background processing daemon
+├── Order.Worker/             # Background processing daemon
+├── OpsBridge.Domain/         # OpsBridge entities (No external dependencies)
+├── OpsBridge.Application/    # OpsBridge use cases & ports (ingestion, reconciliation, inbox/outbox)
+├── OpsBridge.Infrastructure/ # OpsBridge adapters (EF Core, connectors, messaging)
+├── OpsBridge.Api/            # OpsBridge API (staff routes, JSON contract)
+├── OpsBridge.Web/            # OpsBridge web tier (browser journey)
+├── Payment.Service/          # Simulated payment service (no real PSP — see Product 2 caveats)
+└── HealthProbe/              # Container health probes
 tests/
-└── UnitTests/                # Includes Architecture Tests (enforcing layer boundaries)
+├── UnitTests/                # Includes Architecture Tests (enforcing layer boundaries)
+├── IntegrationTests/         # FlashSale — Testcontainers: Postgres, Redis, RabbitMQ
+├── OpsBridge.UnitTests/      # OpsBridge unit tests
+├── OpsBridge.ContractTests/  # OpsBridge API contract tests
+└── OpsBridge.IntegrationTests/ # OpsBridge — Testcontainers: Postgres
 ```
+
+Two solutions, two bounded contexts, one repository:
+`AzureFlashSale.slnx` (FlashSale + shared) and `OpsBridge.slnx` (OpsBridge).
