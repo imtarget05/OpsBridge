@@ -25,6 +25,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Order.Api;
@@ -125,6 +126,19 @@ builder.Services
         if (!string.IsNullOrWhiteSpace(otlpEndpoint))
         {
             tracing.AddOtlpExporter(options => options.Endpoint = new Uri(otlpEndpoint));
+        }
+    })
+    .WithMetrics(metrics =>
+    {
+        // The API meter (ApiMetrics) and the worker meter (WorkerTelemetry,
+        // where the outbox dispatcher counts live — ADR-019). A MeterProvider
+        // only observes the meters it was told about, so both are registered
+        // explicitly; otherwise the pipeline was healthy and exported nothing.
+        metrics.AddMeter(ApiMetrics.MeterName);
+        metrics.AddMeter(WorkerTelemetry.MeterName);
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+        {
+            metrics.AddOtlpExporter(options => options.Endpoint = new Uri(otlpEndpoint));
         }
     });
 
@@ -232,6 +246,13 @@ builder.Services.AddHostedService<OrderProcessorHost>();
 
 var app = builder.Build();
 
+// Start the metrics listener NOW, not on the first scrape. A MeterListener only
+// sees the measurements recorded while it is running, and the outbox
+// dispatcher starts publishing from the first second of the process: a
+// listener created on the first /internal/metrics request would silently lose
+// every dispatch that happened before it.
+app.Services.GetRequiredService<ApiMetrics>();
+
 // Outermost user middleware: it must see every request — including ones
 // rejected by authentication — so the in-flight gauge and the duration
 // histogram describe the whole surface, not just the authorized part.
@@ -283,6 +304,13 @@ app.MapGet("/metrics", (ApiMetrics metrics) =>
     {
         if (key.Contains(".auth.", StringComparison.OrdinalIgnoreCase)) continue;
         AppendSeries(sb, key, "counter", value.ToString());
+    }
+    foreach (var (key, value) in snap.Gauges)
+    {
+        // Outbox lag (pending) and the stuck set are LEVELS, not totals — they
+        // are exported as Prometheus gauges so a scraper reads them as "how many
+        // rows right now" instead of "how many observations so far".
+        AppendSeries(sb, key, "gauge", value.ToString());
     }
     foreach (var (key, hist) in snap.Histograms)
     {
@@ -723,7 +751,6 @@ app.MapPost("/api/outbox/enqueue", async (
 // STAFF/ADMIN: this injects arbitrary events into the bus that real consumers
 // will act on. It is a producer-side runbook, not a customer operation.
 .RequireAuthorization(AuthPolicies.StaffOrAdmin);
-
 // Honest view: `pending` is only what the dispatcher can act on RIGHT NOW.
 // Rows dead-lettered or waiting out a backoff are reported separately — the
 // previous version returned count=0 while rows sat permanently stuck.

@@ -29,6 +29,14 @@ builder.Services
     .WithMetrics(metrics =>
     {
         metrics.AddRuntimeInstrumentation();
+        // ADR-019: the worker's own instruments are only exported when their
+        // meter is REGISTERED here. An OpenTelemetry MeterProvider only
+        // observes the meters it was told about, so without this line the
+        // pipeline was healthy and exported nothing: every outbox counter
+        // (flashsale.worker.outbox.dispatched / .pending / .stuck /
+        // .publish_failures / .retried / .dead_lettered) was declared in
+        // WorkerTelemetry but never reachable by any exporter.
+        metrics.AddMeter(WorkerTelemetry.MeterName);
         if (!string.IsNullOrWhiteSpace(otlpEndpoint))
             metrics.AddOtlpExporter(options => options.Endpoint = new Uri(otlpEndpoint));
     })
