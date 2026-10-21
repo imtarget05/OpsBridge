@@ -326,6 +326,216 @@ jobs:
             rm -f api.pid
           fi
 
+  # ---------------------------------------------------------------------------
+  # OpsBridge FULL-STACK smoke (containers, through the real reverse proxy).
+  # Added 2026-10-21 after the `opsbridge-web-e2e` job above had proved that
+  # the web tier works - but only behind `npm run dev`, with VITE proxying
+  # /api to the API. The DEPLOYED artefact of the web tier had never been
+  # built, let alone run: a built static bundle has no /api proxy at all, so
+  # there was no way to deploy the web tier and have it reach the API. This
+  # job closes that gap and is wired into ci-gate.
+  #
+  # It is the same journey as the job above - the same specs, unchanged - but
+  # the whole stack runs in CONTAINERS and the browser talks to nginx:
+  #
+  #   postgres:15-alpine  ->  OpsBridge.Api (container)  ->  nginx (container)
+  #                                                        ->  Chromium
+  #
+  # Design notes that are load-bearing, not decoration:
+  #   * The web container runs with --read-only and the three writable paths
+  #     mounted as tmpfs. That is the Kubernetes contract (readOnlyRootFilesystem
+  #     + three emptyDir volumes), rehearsed on the runner: if the image ever
+  #     starts writing outside /tmp, THIS job goes red before the cluster does.
+  #   * API_UPSTREAM points at the API CONTAINER, not at 127.0.0.1: the browser
+  #     reaches the API through nginx, and nginx reaches the API over the
+  #     docker network. PLAYWRIGHT_BASE_URL points at the published port of
+  #     the web container, and playwright.config.ts then SKIPS the Vite
+  #     dev server entirely - so the journey cannot accidentally be proven
+  #     against the dev server again.
+  #   * The schema is applied with the --migrate deployment entrypoint
+  #     (ADR-018), against the very image that then serves the API.
+  #   * ASPNETCORE_ENVIRONMENT=Development is required: the demo login
+  #     endpoint (POST /api/v1/auth/login) is mapped only in
+  #     Development/Test (src/OpsBridge.Api/Endpoints/AuthEndpoints.cs).
+  # ---------------------------------------------------------------------------
+  opsbridge-stack-smoke:
+    runs-on: ubuntu-latest
+    env:
+      # The network the three containers share. The API is reached by its
+      # container name, exactly like the Kubernetes Service.
+      STACK_NETWORK: opsbridge-stack
+      PG_CONTAINER: opsbridge-stack-pg
+      API_CONTAINER: opsbridge-stack-api
+      WEB_CONTAINER: opsbridge-stack-web
+      PG_PORT: '55432'
+      API_PORT: '15000'
+      WEB_PORT: '18080'
+      DB_NAME: OpsBridgeDb
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record the commit under test
+        run: |
+          echo "### OpsBridge full-stack smoke (containers)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit under test: \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- web image: \`opsbridge-web:stack-smoke\` (nginx, port 8080, uid 1654)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API image: \`opsbridge-api:stack-smoke\` (Release, Development)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- database: postgres:15-alpine, schema applied with \`--migrate\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- browser base URL: \`http://127.0.0.1:${{ env.WEB_PORT }}\` (the containerised web, NOT the dev server)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/OpsBridge.Web/package-lock.json
+      - name: Build the API image
+        # The same artefact the migration Job and the Deployment use.
+        run: docker build -f Dockerfile.opsbridge -t opsbridge-api:stack-smoke .
+      - name: Build the web image
+        # The artefact the Kubernetes manifest of the web tier pulls.
+        run: docker build -f Dockerfile.web -t opsbridge-web:stack-smoke .
+      - name: Assert the image contract the Kubernetes manifest builds against
+        # The manifest of the web tier is owned by another slice; this step is
+        # the contract between the two, asserted on every run.
+        run: |
+          set -euo pipefail
+          uid=$(docker run --rm --entrypoint id opsbridge-web:stack-smoke | sed -n 's/^uid=\([0-9]*\).*/\1/p')
+          echo "web image uid: ${uid}"
+          [ "${uid}" = "1654" ] || { echo "FAIL: the web image must run as uid 1654"; exit 1; }
+          docker image inspect opsbridge-web:stack-smoke --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -qx 'API_UPSTREAM=http://opsbridge-api:8080' \
+            || { echo "FAIL: the default API_UPSTREAM changed"; exit 1; }
+          docker image inspect opsbridge-web:stack-smoke --format '{{.Config.Healthcheck.Test}}' \
+            | grep -q '/healthz' \
+            || { echo "FAIL: the healthcheck must probe /healthz"; exit 1; }
+          docker image inspect opsbridge-web:stack-smoke --format '{{.Config.ExposedPorts}}' \
+            | grep -q '8080/tcp' \
+            || { echo "FAIL: the web image must expose 8080"; exit 1; }
+      - name: Start PostgreSQL
+        run: |
+          set -euo pipefail
+          docker network create "${STACK_NETWORK}"
+          docker run -d --name "${PG_CONTAINER}" --network "${STACK_NETWORK}" \
+            -e POSTGRES_USER="${DB_USER}" -e POSTGRES_PASSWORD="${DB_PASSWORD}" -e POSTGRES_DB="${DB_NAME}" \
+            -p "${PG_PORT}:5432" postgres:15-alpine
+          # Bounded wait, never a fixed sleep: the migration below refuses to
+          # run against a database that is not there yet.
+          for i in $(seq 1 60); do
+            if docker exec "${PG_CONTAINER}" pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: postgres never became ready"; docker logs "${PG_CONTAINER}"; exit 1
+      - name: Apply the schema with the --migrate entrypoint (ADR-018)
+        # Exit codes: 0 = applied or already at head, 1 = failure, 2 = drift.
+        run: |
+          set -euo pipefail
+          docker run --rm --network "${STACK_NETWORK}" \
+            -e "ConnectionStrings__OpsBridgeDb=Host=${PG_CONTAINER};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}" \
+            opsbridge-api:stack-smoke --migrate
+      - name: Start the API container
+        run: |
+          set -euo pipefail
+          # The API VALIDATES tokens with Jwt__SigningKey, but it MINTS them
+          # with the built-in development key: OpsBridgeJwtTokenIssuer is
+          # registered without configuration (DependencyInjection.cs), so it
+          # always uses its own default. A key that differs from the built-in
+          # one therefore makes every token the API issues invalid (401) -
+          # which is exactly what the first rehearsal of this job showed.
+          # The key is therefore read from the source of truth instead of
+          # being written into this workflow (a literal in a workflow file is
+          # also what the Trivy secret scanner of the security-scan job
+          # would eventually flag).
+          signing_key=$(sed -n 's/.*DefaultSigningKey = "\(.*\)";.*/\1/p' \
+            src/OpsBridge.Infrastructure/Security/OpsBridgeJwtTokenIssuer.cs)
+          [ -n "${signing_key}" ] || { echo "FAIL: the built-in development signing key was not found"; exit 1; }
+          docker run -d --name "${API_CONTAINER}" --network "${STACK_NETWORK}" -p "${API_PORT}:8080" \
+            -e "ConnectionStrings__OpsBridgeDb=Host=${PG_CONTAINER};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}" \
+            -e "Jwt__SigningKey=${signing_key}" \
+            -e ASPNETCORE_ENVIRONMENT=Development \
+            -e ASPNETCORE_URLS=http://+:8080 \
+            opsbridge-api:stack-smoke
+          for i in $(seq 1 90); do
+            if curl -sf -m 3 "http://127.0.0.1:${API_PORT}/healthz" >/dev/null 2>&1; then
+              echo "api healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: the API never became healthy"; docker logs "${API_CONTAINER}"; exit 1
+      - name: Start the web container (nginx in front of the API)
+        # --read-only plus the three writable paths: this is the Kubernetes
+        # contract (readOnlyRootFilesystem: true + three emptyDir volumes at
+        # /tmp/nginx/conf.d, /tmp/nginx/cache and /tmp/nginx/run), rehearsed
+        # here so the image cannot drift away from it unnoticed.
+        run: |
+          set -euo pipefail
+          docker run -d --name "${WEB_CONTAINER}" --network "${STACK_NETWORK}" -p "${WEB_PORT}:8080" \
+            --read-only \
+            --tmpfs /tmp/nginx/conf.d --tmpfs /tmp/nginx/cache --tmpfs /tmp/nginx/run \
+            -e "API_UPSTREAM=http://${API_CONTAINER}:8080" \
+            opsbridge-web:stack-smoke
+          for i in $(seq 1 60); do
+            if curl -sf -m 3 "http://127.0.0.1:${WEB_PORT}/healthz" >/dev/null 2>&1; then
+              echo "web healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: the web container never became healthy"; docker logs "${WEB_CONTAINER}"; exit 1
+      - name: Install the web dependencies
+        working-directory: src/OpsBridge.Web
+        run: npm ci
+      - name: Type-check the Playwright specs
+        working-directory: src/OpsBridge.Web
+        run: npm run typecheck:e2e
+      - name: Install the Playwright browser (chromium)
+        working-directory: src/OpsBridge.Web
+        run: npx playwright install --with-deps chromium
+      - name: Run the browser journey against the containerised stack
+        # PLAYWRIGHT_BASE_URL makes playwright.config.ts skip the Vite dev
+        # server: the browser talks to the published port of the WEB
+        # CONTAINER, and every /api request goes through nginx.
+        # STACK_SMOKE_DATABASE_URL lets the new spec read the row the browser
+        # wrote straight out of PostgreSQL.
+        # --workers=1: the runner's CPU is shared with the API and the
+        # database, and the existing spec asserts the post-login URL with a
+        # 5 s timeout.
+        working-directory: src/OpsBridge.Web
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:${{ env.WEB_PORT }}
+          STACK_SMOKE_DATABASE_URL: postgresql://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@127.0.0.1:${{ env.PG_PORT }}/${{ env.DB_NAME }}
+        run: npx playwright test --workers=1 --reporter=html,line
+      - name: Collect the container logs
+        # always(): a red journey is only diagnosable with the logs of the
+        # containers it ran against.
+        if: always()
+        run: |
+          mkdir -p stack-logs
+          docker logs "${WEB_CONTAINER}" > stack-logs/web.log 2>&1 || true
+          docker logs "${API_CONTAINER}" > stack-logs/api.log 2>&1 || true
+          docker logs "${PG_CONTAINER}"   > stack-logs/postgres.log 2>&1 || true
+          # The nginx access log IS the evidence that the journey went through
+          # the reverse proxy: every /api/v1/... line is a request the browser
+          # made to the web container.
+          grep -E '"(GET|POST) /api' stack-logs/web.log | tail -40 > stack-logs/web-api-access.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opsbridge-stack-smoke
+          path: |
+            src/OpsBridge.Web/playwright-report/
+            src/OpsBridge.Web/test-results/
+            stack-logs/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Tear the stack down (no orphan container may hold the runner)
+        if: always()
+        run: |
+          docker rm -f "${WEB_CONTAINER}" "${API_CONTAINER}" "${PG_CONTAINER}" 2>/dev/null || true
+          docker network rm "${STACK_NETWORK}" 2>/dev/null || true
+
   concurrency-harness:
     runs-on: ubuntu-latest
     services:
@@ -729,6 +939,7 @@ jobs:
       - integration-tests
       - opsbridge-tests
       - opsbridge-web-e2e
+      - opsbridge-stack-smoke
       - concurrency-harness
       - security-scan
       - docker-build-scan
@@ -742,6 +953,7 @@ jobs:
           echo "integration-tests    = ${{ needs.integration-tests.result }}"
           echo "opsbridge-tests      = ${{ needs.opsbridge-tests.result }}"
           echo "opsbridge-web-e2e    = ${{ needs.opsbridge-web-e2e.result }}"
+          echo "opsbridge-stack-smoke = ${{ needs.opsbridge-stack-smoke.result }}"
           echo "concurrency-harness  = ${{ needs.concurrency-harness.result }}"
           echo "security-scan        = ${{ needs.security-scan.result }}"
           echo "docker-build-scan    = ${{ needs.docker-build-scan.result }}"
@@ -751,6 +963,7 @@ jobs:
           [ "${{ needs.integration-tests.result }}"   = "success" ] || { echo "GATE FAIL: integration-tests";   fail=1; }
           [ "${{ needs.opsbridge-tests.result }}"     = "success" ] || { echo "GATE FAIL: opsbridge-tests";     fail=1; }
           [ "${{ needs.opsbridge-web-e2e.result }}"   = "success" ] || { echo "GATE FAIL: opsbridge-web-e2e";   fail=1; }
+          [ "${{ needs.opsbridge-stack-smoke.result }}" = "success" ] || { echo "GATE FAIL: opsbridge-stack-smoke"; fail=1; }
           [ "${{ needs.concurrency-harness.result }}" = "success" ] || { echo "GATE FAIL: concurrency-harness"; fail=1; }
           [ "${{ needs.security-scan.result }}"       = "success" ] || { echo "GATE FAIL: security-scan";       fail=1; }
           [ "${{ needs.docker-build-scan.result }}"   = "success" ] || { echo "GATE FAIL: docker-build-scan";   fail=1; }

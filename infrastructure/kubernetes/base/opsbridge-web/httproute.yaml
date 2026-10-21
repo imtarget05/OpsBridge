@@ -1,0 +1,47 @@
+# L8 — north-south routing for the OpsBridge web tier.
+#
+# ONE rule, not two: both the application shell and the API calls reach the
+# same nginx container, which decides internally what is an API call
+# (`/api/*` -> ${API_UPSTREAM}) and what is a client-side route (everything
+# else -> index.html). Splitting the path match here as well would duplicate
+# that decision in two places — the gateway's idea of "/api" and nginx's idea
+# of "/api" — and they would drift.
+#
+# SELF-CONTAINED ON PURPOSE. This route is NOT added to overlays/prod or
+# overlays/local: the web image exists in no registry yet, so a route pointing
+# at it would send real north-south traffic to a workload that cannot start.
+# See README.md ("Adoption steps") — the route is applied in the same change
+# that pins the image digest.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: opsbridge-web
+  labels:
+    app: opsbridge-web
+    project: opsbridge
+    role: web
+spec:
+  # Attached to the cross-namespace portfolio Gateway in platform-gateway, the
+  # same parent the FlashSale routes use. The backendRef stays in this
+  # namespace, so no ReferenceGrant is required.
+  parentRefs:
+    - name: portfolio-gateway
+      namespace: platform-gateway
+      sectionName: http
+  hostnames:
+    # A concrete hostname, never a wildcard. A wildcard would expose EVERY
+    # hostname routed by the shared gateway to this application, which is a
+    # tenant-isolation question nobody has answered in this repository. The
+    # value is environment-specific: the base ships the prod-shaped one and an
+    # overlay overrides it (`opsbridge.local` for the local overlay).
+    - opsbridge.prod
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        # Port 80 — the Service's port, per the convention of every other
+        # backendRef in this tree. The 80 -> 8080 mapping is the Service's job.
+        - name: opsbridge-web
+          port: 80

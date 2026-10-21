@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# SELF-CONTAINED ON PURPOSE — read this before adding the directory to
+# infrastructure/kubernetes/base/kustomization.yaml.
+#
+# The OpsBridge web image does not exist in any registry yet. Adding these
+# resources to the base would make the CURRENT deployment fail: the base is
+# rendered by the prod overlay, the overlay pins every image by digest
+# (ADR-011), and a digest-pinned placeholder for an image that was never pushed
+# is an ImagePullBackOff on every rollout of the existing FlashSale services.
+#
+# The HTTPRoute is in here for the same reason, and one more: a route that
+# points at a workload which cannot start sends real north-south traffic to
+# nothing. The route is applied in the same change that pins the image digest
+# (see README.md, "Adoption steps").
+#
+# `namespace` gives the set a usable default when it is rendered on its own
+# (`kubectl kustomize infrastructure/kubernetes/base/opsbridge-web`). An overlay
+# that adopts this directory overrides it with its own namespace, exactly as
+# `flash-sale-prod` overrides the FlashSale base.
+namespace: opsbridge
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - httproute.yaml

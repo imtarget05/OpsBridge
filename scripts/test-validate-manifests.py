@@ -26,6 +26,10 @@ OVERLAY = os.path.join(ROOT, "infrastructure", "kubernetes", "overlays", "prod")
 # overlay, because its image does not exist in a registry yet), so it is
 # validated from its OWN render — see scripts/validate-manifests.sh section 9.
 OPSBRIDGE_DIR = os.path.join(ROOT, "infrastructure", "kubernetes", "base", "opsbridge-api")
+# The OpsBridge WEB artefact set is self-contained too (its image does not
+# exist in a registry yet), so it is validated from its OWN render — see
+# scripts/validate-manifests.sh section 10.
+WEB_DIR = os.path.join(ROOT, "infrastructure", "kubernetes", "base", "opsbridge-web")
 VALIDATOR = os.path.join(ROOT, "scripts", "validate-manifests.sh")
 
 MUTATIONS = []
@@ -371,6 +375,231 @@ def mut_ob_job_image_differs(docs):
     return docs
 
 
+# ----------------------------------------------------------------------
+# Negative controls for the OpsBridge WEB artefact set
+# (validate-manifests.sh section 10). They are the ADR-020 deployment
+# contract, each one broken in exactly one way: a rule that cannot be broken
+# is a rule that documents nothing.
+# ----------------------------------------------------------------------
+
+def mut_web_wrong_image(docs):
+    """The web image must follow the base convention (registry-neutral name,
+    placeholder tag) so the prod overlay's `images:` transformer can pin it."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "opsbridge-web:placeholder-set-by-overlay" not in docs[i]:
+        raise KeyError("Deployment doc has no base-convention image")
+    docs[i] = docs[i].replace("opsbridge-web:placeholder-set-by-overlay",
+                               "opsbridge-web:latest", 1)
+    return docs
+
+
+def mut_web_wrong_container_port(docs):
+    """The container listens on 8080, not 80: a non-root process cannot bind a
+    privileged port, and the Service is what maps 80 -> 8080."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "containerPort: 8080" not in docs[i]:
+        raise KeyError("Deployment doc has no containerPort: 8080")
+    docs[i] = docs[i].replace("containerPort: 8080", "containerPort: 80", 1)
+    return docs
+
+
+def mut_web_privileged(docs):
+    """A privileged container is root-equivalent whatever the user id says."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    anchor = "        securityContext:\n"
+    if anchor not in docs[i]:
+        raise KeyError("Deployment doc has no container securityContext")
+    docs[i] = docs[i].replace(
+        anchor, anchor + "          privileged: true\n", 1)
+    return docs
+
+
+def mut_web_runs_as_root(docs):
+    """The web tier must not run as root (ADR-007)."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "runAsUser: 1654" not in docs[i]:
+        raise KeyError("Deployment doc has no runAsUser: 1654")
+    docs[i] = docs[i].replace("runAsUser: 1654", "runAsUser: 0", 1)
+    return docs
+
+
+def mut_web_wrong_uid(docs):
+    """Not root is not enough: the uid has to be the one the tree uses, or the
+    image's own file ownership assumptions are broken."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "runAsUser: 1654" not in docs[i]:
+        raise KeyError("Deployment doc has no runAsUser: 1654")
+    docs[i] = docs[i].replace("runAsUser: 1654", "runAsUser: 1000", 1)
+    return docs
+
+
+def mut_web_readonly_rootfs_false(docs):
+    """readOnlyRootFilesystem: false is a writable root filesystem."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "readOnlyRootFilesystem: true" not in docs[i]:
+        raise KeyError("Deployment doc has no readOnlyRootFilesystem: true")
+    docs[i] = docs[i].replace("readOnlyRootFilesystem: true",
+                               "readOnlyRootFilesystem: false", 1)
+    return docs
+
+
+def mut_web_host_path(docs):
+    """A hostPath volume reaches outside the pod: a node-level escape hatch,
+    and the classic way a "read-only" pod still writes to the host."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    mount_anchor = "        - mountPath: /tmp\n          name: tmp\n"
+    vol_anchor = "      - emptyDir: {}\n        name: tmp\n"
+    if mount_anchor not in docs[i] or vol_anchor not in docs[i]:
+        raise KeyError("Deployment doc has no tmp mount/volume to anchor on")
+    docs[i] = docs[i].replace(
+        mount_anchor,
+        mount_anchor + "        - mountPath: /host\n          name: host-vol\n", 1)
+    docs[i] = docs[i].replace(
+        vol_anchor,
+        vol_anchor + "      - hostPath:\n          path: /var/log\n"
+                     "          type: Directory\n        name: host-vol\n", 1)
+    return docs
+
+
+def _drop_probe(doc, probe):
+    """Remove a probe block from the RENDERED form.
+
+    The block's continuation lines are indented deeper than the next key
+    (10 spaces vs 8), so the block can be cut without touching its neighbour.
+    """
+    pattern = re.compile(rf"(?m)^        {probe}:\n(?:^          .*\n)+")
+    new = pattern.sub("", doc, count=1)
+    if new == doc:
+        raise KeyError(f"Deployment doc has no {probe} block to remove")
+    return new
+
+
+def mut_web_no_liveness_probe(docs):
+    """A Deployment with no liveness probe never restarts a wedged process."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    docs[i] = _drop_probe(docs[i], "livenessProbe")
+    return docs
+
+
+def mut_web_no_readiness_probe(docs):
+    """A Deployment with no readiness probe publishes pods that cannot serve."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    docs[i] = _drop_probe(docs[i], "readinessProbe")
+    return docs
+
+
+def mut_web_upstream_credential(docs):
+    """API_UPSTREAM is an ADDRESS. Userinfo in it means a credential is
+    travelling in what the contract says is a plain in-cluster address."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: http://admin:s3cret@opsbridge-api:80", 1)
+    return docs
+
+
+def mut_web_upstream_token(docs):
+    """A token smuggled into the upstream address is a credential in a
+    configuration value — and it would land in the pod spec in clear text."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: http://opsbridge-api:80?token=abc123", 1)
+    return docs
+
+
+def mut_web_upstream_not_an_address(docs):
+    """An upstream without a scheme is not an address at all: nginx needs one
+    to build a valid upstream, and the image would fail to start."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: opsbridge-api:80", 1)
+    return docs
+
+
+def mut_web_upstream_from_secret(docs):
+    """The upstream is an address, not a credential, so it must not be read
+    from a Secret — and a Secret in the web pod is a credential the web tier
+    does not need."""
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    anchor = "        - name: API_UPSTREAM\n          value: http://opsbridge-api:80\n"
+    if anchor not in docs[i]:
+        raise KeyError("Deployment doc has no literal API_UPSTREAM env")
+    docs[i] = docs[i].replace(
+        anchor,
+        "        - name: API_UPSTREAM\n"
+        "          valueFrom:\n"
+        "            secretKeyRef:\n"
+        "              key: api-upstream\n"
+        "              name: opsbridge-secrets\n", 1)
+    return docs
+
+
+def mut_web_service_loadbalancer(docs):
+    """The web tier is reached through the HTTPRoute, not through a public IP
+    on the Service."""
+    i = find_doc(docs, "Service", "opsbridge-web")
+    if "type: ClusterIP" not in docs[i]:
+        raise KeyError("Service doc has no type: ClusterIP")
+    docs[i] = docs[i].replace("type: ClusterIP", "type: LoadBalancer", 1)
+    return docs
+
+
+def mut_web_service_wrong_port(docs):
+    """Every backendRef in this tree addresses a Service on port 80."""
+    i = find_doc(docs, "Service", "opsbridge-web")
+    if "\n    port: 80\n" not in docs[i]:
+        raise KeyError("Service doc has no port: 80")
+    docs[i] = docs[i].replace("\n    port: 80\n", "\n    port: 8080\n", 1)
+    return docs
+
+
+def mut_web_service_wrong_target_port(docs):
+    """The container listens on 8080; the Service is what joins the two."""
+    i = find_doc(docs, "Service", "opsbridge-web")
+    if "targetPort: 8080" not in docs[i]:
+        raise KeyError("Service doc has no targetPort: 8080")
+    docs[i] = docs[i].replace("targetPort: 8080", "targetPort: 80", 1)
+    return docs
+
+
+def mut_web_route_wrong_backend(docs):
+    """The route must point at THIS web Service. The mutation changes only the
+    backendRef, so the object's own name still says "opsbridge-web" — a check
+    that grepped the name instead of the backendRefs block would not see it."""
+    i = find_doc(docs, "HTTPRoute", "opsbridge-web")
+    anchor = "    - name: opsbridge-web\n      port: 80\n"
+    if anchor not in docs[i]:
+        raise KeyError("HTTPRoute doc has no opsbridge-web backendRef")
+    docs[i] = docs[i].replace(anchor, "    - name: order-api\n      port: 80\n", 1)
+    return docs
+
+
+def mut_web_route_wildcard_hostname(docs):
+    """A wildcard hostname exposes this application to every hostname the
+    shared gateway routes."""
+    i = find_doc(docs, "HTTPRoute", "opsbridge-web")
+    if "  - opsbridge.prod\n" not in docs[i]:
+        raise KeyError("HTTPRoute doc has no concrete hostname")
+    docs[i] = docs[i].replace("  - opsbridge.prod\n", '  - "*"\n', 1)
+    return docs
+
+
+def mut_web_route_missing_parent(docs):
+    """A route with no parentRefs is never attached to the gateway."""
+    i = find_doc(docs, "HTTPRoute", "opsbridge-web")
+    pattern = re.compile(r"(?m)^  parentRefs:\n(?:^  - .*\n(?:^    .*\n)*)+")
+    new = pattern.sub("", docs[i], count=1)
+    if new == docs[i]:
+        raise KeyError("HTTPRoute doc has no parentRefs block to remove")
+    docs[i] = new
+    return docs
+
+
 MUTATIONS = [
     ("api_missing_rabbitmq_env", "order-api is missing ConnectionStrings__RabbitMQ", mut_api_missing_rabbitmq_env),
     ("api_missing_messaging_provider", "order-api does not set Messaging__Provider explicitly", mut_api_missing_provider),
@@ -407,6 +636,32 @@ OPSBRIDGE_MUTATIONS = [
     ("ob_job_image_differs", "must be the same artefact", mut_ob_job_image_differs),
 ]
 
+# The OpsBridge WEB artefact set's own mutations. Same shape, third target:
+# the validator must catch each of them in the WEB render.
+WEB_MUTATIONS = [
+    ("web_wrong_image", "not the base convention opsbridge-web:placeholder-set-by-overlay", mut_web_wrong_image),
+    ("web_wrong_container_port", "does not declare containerPort 8080", mut_web_wrong_container_port),
+    ("web_privileged", "sets privileged: true", mut_web_privileged),
+    ("web_runs_as_root", "runs as root (runAsUser: 0)", mut_web_runs_as_root),
+    ("web_wrong_uid", "does not run as uid 1654", mut_web_wrong_uid),
+    ("web_readonly_rootfs_false", "sets readOnlyRootFilesystem: false", mut_web_readonly_rootfs_false),
+    ("web_host_path", "mounts a host path", mut_web_host_path),
+    ("web_no_liveness_probe", "declares no livenessProbe", mut_web_no_liveness_probe),
+    ("web_no_readiness_probe", "declares no readinessProbe", mut_web_no_readiness_probe),
+    ("web_upstream_credential", "carries credential material", mut_web_upstream_credential),
+    ("web_upstream_token", "carries credential material", mut_web_upstream_token),
+    ("web_upstream_not_an_address", "is not a plain in-cluster address", mut_web_upstream_not_an_address),
+    ("web_upstream_from_secret", "reads API_UPSTREAM from a Secret", mut_web_upstream_from_secret),
+    ("web_service_loadbalancer", "is exposed as LoadBalancer", mut_web_service_loadbalancer),
+    ("web_service_wrong_port", "does not expose port 80", mut_web_service_wrong_port),
+    ("web_service_wrong_target_port", "does not target port 8080", mut_web_service_wrong_target_port),
+    ("web_route_wrong_backend", "does not reference the web Service opsbridge-web", mut_web_route_wrong_backend),
+    ("web_route_wildcard_hostname", "uses a wildcard hostname", mut_web_route_wildcard_hostname),
+    ("web_route_missing_parent", "declares no parentRefs", mut_web_route_missing_parent),
+    ("web_service_missing", "has no Service/opsbridge-web", drop_doc("Service", "opsbridge-web")),
+    ("web_route_missing", "has no HTTPRoute/opsbridge-web", drop_doc("HTTPRoute", "opsbridge-web")),
+]
+
 # Negative controls on the OPERAND, not on the manifest: the OpsBridge render
 # the validator is handed.
 #
@@ -428,11 +683,21 @@ INPUT_NEGATIVE_CONTROLS = [
     ("list_document_opsbridge_render", "- a\n- b\n", "non-mapping document"),
 ]
 
+# The same operand controls for the WEB render. An empty web render must not
+# make section 10 vacuous while the script reports PASS.
+WEB_INPUT_NEGATIVE_CONTROLS = [
+    ("empty_web_render", "", "the file is empty (0 bytes)"),
+    ("unparseable_web_render", "not: [valid yaml\n", "it is not parseable YAML"),
+    ("non_kubernetes_web_render", "foo: bar\n", "it contains a document with no kind"),
+]
 
-def run_validator(path, opsbridge_path=None):
+
+def run_validator(path, opsbridge_path=None, web_path=None):
     cmd = ["bash", VALIDATOR, path]
     if opsbridge_path is not None:
         cmd.append(opsbridge_path)
+    if web_path is not None:
+        cmd.append(web_path)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
@@ -449,6 +714,12 @@ def main():
         sys.exit(f"kustomize render of the OpsBridge artefact set failed:\n{ob_render.stderr}")
     clean_ob = ob_render.stdout
 
+    web_render = subprocess.run(["kubectl", "kustomize", WEB_DIR],
+                                capture_output=True, text=True, timeout=120)
+    if web_render.returncode != 0:
+        sys.exit(f"kustomize render of the OpsBridge web artefact set failed:\n{web_render.stderr}")
+    clean_web = web_render.stdout
+
     # Sanity: the CLEAN manifest must PASS. If the validator rejects the honest
     # render, every mutation result below is meaningless.
     with tempfile.TemporaryDirectory() as tmp:
@@ -458,7 +729,10 @@ def main():
         clean_ob_path = os.path.join(tmp, "clean-opsbridge.yaml")
         with open(clean_ob_path, "w") as fh:
             fh.write(clean_ob)
-        clean_run = run_validator(clean_path, clean_ob_path)
+        clean_web_path = os.path.join(tmp, "clean-web.yaml")
+        with open(clean_web_path, "w") as fh:
+            fh.write(clean_web)
+        clean_run = run_validator(clean_path, clean_ob_path, clean_web_path)
         if clean_run.returncode != 0:
             sys.exit("validator FAILS the clean render - fix that first:\n"
                      + (clean_run.stdout + clean_run.stderr)[-2000:])
@@ -475,7 +749,7 @@ def main():
             with open(path, "w") as fh:
                 fh.write(join_docs(docs))
 
-            proc = run_validator(path, clean_ob_path)
+            proc = run_validator(path, clean_ob_path, clean_web_path)
             combined = proc.stdout + proc.stderr
             if proc.returncode == 0:
                 failures.append(f"{name}: validator PASSED a broken manifest (expected FAIL)")
@@ -500,7 +774,33 @@ def main():
             with open(path, "w") as fh:
                 fh.write(join_docs(docs))
 
-            proc = run_validator(clean_path, path)
+            proc = run_validator(clean_path, path, clean_web_path)
+            combined = proc.stdout + proc.stderr
+            if proc.returncode == 0:
+                failures.append(f"{name}: validator PASSED a broken manifest (expected FAIL)")
+            elif expected not in combined:
+                failures.append(
+                    f"{name}: validator failed but without the expected message\n"
+                    f"    expected substring: {expected!r}\n"
+                    f"    output: {combined.strip()[:400]}")
+            else:
+                print(f"  caught: {name}")
+
+        # The OpsBridge WEB set: the prod render and the OpsBridge API render
+        # both stay clean, so every failure below can only come from the web
+        # mutation.
+        for name, expected, mutate in WEB_MUTATIONS:
+            docs = split_docs(clean_web)
+            try:
+                docs = mutate(docs)
+            except KeyError as exc:
+                failures.append(f"{name}: mutation itself failed: {exc}")
+                continue
+            path = os.path.join(tmp, f"{name}.yaml")
+            with open(path, "w") as fh:
+                fh.write(join_docs(docs))
+
+            proc = run_validator(clean_path, clean_ob_path, path)
             combined = proc.stdout + proc.stderr
             if proc.returncode == 0:
                 failures.append(f"{name}: validator PASSED a broken manifest (expected FAIL)")
@@ -520,11 +820,34 @@ def main():
             with open(path, "w") as fh:
                 fh.write(content)
 
-            proc = run_validator(clean_path, path)
+            proc = run_validator(clean_path, path, clean_web_path)
             combined = proc.stdout + proc.stderr
             if proc.returncode == 0:
                 failures.append(
                     f"{name}: validator PASSED an unusable OpsBridge render (expected FAIL)")
+            elif "is not usable" not in combined:
+                failures.append(
+                    f"{name}: validator failed but did not say the render was unusable\n"
+                    f"    output: {combined.strip()[:400]}")
+            elif expected not in combined:
+                failures.append(
+                    f"{name}: validator failed without the expected reason\n"
+                    f"    expected substring: {expected!r}\n"
+                    f"    output: {combined.strip()[:400]}")
+            else:
+                print(f"  caught: {name}")
+
+        # The same operand controls for the WEB render.
+        for name, content, expected in WEB_INPUT_NEGATIVE_CONTROLS:
+            path = os.path.join(tmp, f"{name}.yaml")
+            with open(path, "w") as fh:
+                fh.write(content)
+
+            proc = run_validator(clean_path, clean_ob_path, path)
+            combined = proc.stdout + proc.stderr
+            if proc.returncode == 0:
+                failures.append(
+                    f"{name}: validator PASSED an unusable OpsBridge web render (expected FAIL)")
             elif "is not usable" not in combined:
                 failures.append(
                     f"{name}: validator failed but did not say the render was unusable\n"
@@ -542,8 +865,8 @@ def main():
         for f in failures:
             print(f"  - {f}")
         return 1
-    n_mut = len(MUTATIONS) + len(OPSBRIDGE_MUTATIONS)
-    n_input = len(INPUT_NEGATIVE_CONTROLS)
+    n_mut = len(MUTATIONS) + len(OPSBRIDGE_MUTATIONS) + len(WEB_MUTATIONS)
+    n_input = len(INPUT_NEGATIVE_CONTROLS) + len(WEB_INPUT_NEGATIVE_CONTROLS)
     print(f"\nALL {n_mut} mutations + {n_input} unusable-render controls caught "
           f"- every assertion can fail.")
     return 0

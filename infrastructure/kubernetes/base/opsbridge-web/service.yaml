@@ -1,0 +1,26 @@
+# The web tier's Service. ClusterIP: the browser front end is reached through
+# the Gateway API HTTPRoute, not through a public IP on the Service itself.
+#
+# Port 80 -> targetPort 8080, and that is NOT a cosmetic choice: every
+# backendRef in this repository's HTTPRoutes addresses a Service on port 80
+# (overlays/prod/httproute.yaml, overlays/local/httproute.yaml), and the
+# container listens on 8080 because it runs as a non-root user and cannot bind
+# a privileged port. The two numbers are joined HERE and nowhere else.
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsbridge-web
+  labels:
+    app: opsbridge-web
+    project: opsbridge
+    role: web
+spec:
+  # ClusterIP, stated explicitly rather than left to the default, so a later
+  # edit that adds `type: LoadBalancer` has to delete this line too.
+  type: ClusterIP
+  selector:
+    app: opsbridge-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

@@ -1,0 +1,153 @@
+# OpsBridge web tier — the browser front end (src/OpsBridge.Web) served as a
+# built static bundle behind nginx.
+#
+# This manifest states the contract the image MUST satisfy. The image itself
+# (Dockerfile.web) is written by another slice; the contract is fixed and is
+# restated here so a change to either side is a visible mismatch:
+#
+#   * the container listens on 8080, NOT 80, so it can run as a non-root user
+#     (binding a privileged port is the one thing a non-root process cannot do
+#     without a capability this pod does not have);
+#   * the process runs as uid 1654 (ADR-007), the same identity as the rest of
+#     the tree;
+#   * `/api/*` is proxied to ${API_UPSTREAM} with the request URI UNCHANGED
+#     (the client calls `/api/v1/...` — see
+#     src/OpsBridge.Web/src/lib/api-client.ts:19), so the API sees the path it
+#     expects;
+#   * every other path falls back to index.html (client-side routing: a deep
+#     link such as /invoices must return the shell, not a 404);
+#   * `/healthz` answers 200;
+#   * access/error logs go to stdout/stderr, so the pod needs no writable log
+#     directory.
+#
+# The reverse proxy is not decoration: the client uses a RELATIVE base URL
+# (`/api/v1`), so a same-origin proxy removes the cross-origin surface
+# entirely — no CORS, no preflight, no third-party origin allowed to send the
+# bearer token. See ADR-020.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsbridge-web
+  labels:
+    app: opsbridge-web
+    project: opsbridge
+    role: web
+spec:
+  # Two replicas: the web tier is stateless (a bundle on disk plus a proxy), so
+  # it scales like the API and survives a node drain without taking the UI down.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: opsbridge-web
+  template:
+    metadata:
+      labels:
+        app: opsbridge-web
+    spec:
+      # Same pod-level hardening as the rest of the tree (ADR-007): the image
+      # already runs as uid 1654, and declaring it here makes kubelet ENFORCE it
+      # rather than trusting the image default.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        # The group matters as much as the user here: the writable paths below
+        # are emptyDir volumes, and kubelet makes an emptyDir group-writable
+        # for `fsGroup`. With runAsGroup == fsGroup == 1654 the nginx worker
+        # processes own what they write.
+        runAsGroup: 1654
+        fsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: opsbridge-web
+          # Registry-neutral image NAME, the base convention: the prod overlay's
+          # `images:` transformer rewrites this to the pinned SHA. The image does
+          # NOT exist in any registry yet, which is why this directory is NOT
+          # referenced by infrastructure/kubernetes/base/kustomization.yaml — see
+          # README.md ("Adoption steps") for the exact steps that make it
+          # deployable.
+          image: opsbridge-web:placeholder-set-by-overlay
+          # container-level hardening (Trivy KSV-0014/KSV-0118): pod-level
+          # securityContext alone does not satisfy these checks.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            # 8080, not 80. The container runs as a non-root user, and a
+            # non-root process cannot bind a privileged port (<1024) without a
+            # capability this pod deliberately drops. The Service maps 80 ->
+            # 8080 so the rest of the platform (Gateway API backendRefs) keeps
+            # using port 80.
+            - name: http
+              containerPort: 8080
+          env:
+            # The upstream the image proxies /api/* to. It is a plain in-cluster
+            # Service DNS name — an ADDRESS, not a credential, so it is a
+            # literal value here and never a Secret reference.
+            #
+            # The port is the SERVICE port (80), not the container port (8080):
+            # a ClusterIP only listens on the ports its Service declares, so
+            # `http://opsbridge-api:8080` would be DROPPED by kube-proxy. The
+            # 80 -> 8080 mapping lives in Service/opsbridge-api.
+            - name: API_UPSTREAM
+              value: http://opsbridge-api:80
+          volumeMounts:
+            # readOnlyRootFilesystem=true means nginx cannot create its own
+            # scratch directories, and it refuses to start if it cannot:
+            #   mkdir() "/var/cache/nginx/client_temp" failed (30: Read-only
+            #   file system)
+            # The stock nginx image puts client_body/proxy/fastcgi/uwsgi/scgi
+            # temp paths under /var/cache/nginx, so that whole tree has to be
+            # writable. This is the single volume that MUST exist.
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            # The stock nginx.conf writes its pid file to /var/run/nginx.pid.
+            # With a read-only root filesystem that write fails and nginx exits
+            # ("[emerg] open() "/var/run/nginx.pid" failed (30: Read-only file
+            # system)"). The image MAY instead point `pid` at /tmp — in which
+            # case this mount is unused, and that is harmless.
+            - name: nginx-run
+              mountPath: /var/run
+            # The conventional scratch path, and the fallback location for a
+            # pid file. Also what a `--tmpfs /tmp` equivalent would give.
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              # /healthz is answered by the IMAGE itself (the nginx config
+              # has an explicit location for it), NOT proxied to the API. That
+              # is deliberate: the web tier serves the application shell
+              # whether or not the API is up, so a liveness probe that failed
+              # on an API outage would restart healthy nginx processes and
+              # turn a partial outage into a full one.
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              # Same path, for the same reason: readiness answers "can this
+              # pod serve the shell?", not "is the whole system healthy?".
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

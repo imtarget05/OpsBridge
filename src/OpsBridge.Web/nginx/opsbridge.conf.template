@@ -1,0 +1,109 @@
+# ---------------------------------------------------------------------------
+# OpsBridge web tier - the nginx server block.
+#
+# THIS FILE IS A TEMPLATE. It is copied into the image as
+#   /etc/nginx/templates/opsbridge.conf.template
+# and the official nginx image's entrypoint renders it with envsubst into
+#   $NGINX_ENVSUBST_OUTPUT_DIR/opsbridge.conf
+# The image sets NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx/conf.d, because the
+# container runs with a read-only root filesystem and /etc/nginx is not
+# writable at runtime.
+#
+# The ONLY runtime knob is API_UPSTREAM (scheme://host[:port] of the
+# OpsBridge API, e.g. http://opsbridge-api:8080).
+#
+#   * API_UPSTREAM MUST NOT carry a path and MUST NOT end with a slash.
+#     `proxy_pass` below is used WITHOUT a URI component, so nginx forwards
+#     the request URI UNCHANGED: /api/v1/auth/login reaches the API as
+#     /api/v1/auth/login and /api/v1/purchase-orders as
+#     /api/v1/purchase-orders. (With a URI component - a trailing slash -
+#     nginx would strip the matched /api/ prefix and the API would answer
+#     404; with a VARIABLE in proxy_pass nginx likewise forwards the
+#     original URI, but a variable needs a `resolver`, which is not
+#     portable between Docker (127.0.0.11) and Kubernetes (127.0.0.10). The
+#     static form below needs no resolver at all.)
+#   * The upstream host name is resolved by nginx when the configuration is
+#     loaded, so the API host must already exist when the web container
+#     starts. In Kubernetes that is the `opsbridge-api` Service, which
+#     resolves as soon as it exists, even before it has ready endpoints.
+# ---------------------------------------------------------------------------
+
+server {
+    # 8080 (not 80): the container runs as a non-root user (uid 1654) and
+    # cannot bind a privileged port.
+    listen 8080;
+    server_name _;
+
+    # The built single-page application (Vite `dist/`).
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # ---- security headers -------------------------------------------------
+    # Declared on the server block, so they are inherited by every location
+    # (a location that declares its own add_header would cancel the
+    # inheritance - none does).
+    #
+    # The CSP carries NO 'unsafe-inline' and NO 'unsafe-eval': the built
+    # bundle loads no inline script and no inline style, so the strict policy
+    # works. 'frame-ancestors none' plus X-Frame-Options deny framing
+    # altogether.
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=(), payment=(), usb=()" always;
+
+    # ---- API: same-origin reverse proxy -----------------------------------
+    # The frontend uses the RELATIVE base URL /api/v1 (see
+    # src/lib/api-client.ts), so the browser only ever talks to this origin
+    # and the containerised setup needs no CORS and no cross-origin
+    # credential handling.
+    location ^~ /api/ {
+        proxy_pass ${API_UPSTREAM};
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+
+    # /api without the trailing slash is not an API route; send it to /api/
+    # instead of letting it fall through to the SPA.
+    location = /api {
+        return 308 /api/;
+    }
+
+    # ---- health ------------------------------------------------------------
+    # Liveness AND readiness endpoint of the web tier. Answered by nginx
+    # itself (no upstream involved), so it stays green while the API is down
+    # - which is correct for a liveness probe and means a readiness probe
+    # that needs the API must probe the API, not this endpoint.
+    location = /healthz {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"Healthy","service":"OpsBridge.Web"}';
+    }
+
+    # ---- the single-page application --------------------------------------
+    # Unknown paths fall back to index.html: the client-side router owns the
+    # routes (/dashboard, /purchase-orders, ...).
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # ---- fingerprinted build assets ---------------------------------------
+    # Vite emits content-hashed file names under /assets, so they can be
+    # cached forever. `expires` (not `add_header`) is used on purpose:
+    # `expires` does not cancel the inherited add_header directives.
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+    }
+}

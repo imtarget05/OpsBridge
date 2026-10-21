@@ -20,8 +20,13 @@ OVERLAY=infrastructure/kubernetes/overlays/prod
 # kustomization and never reaches the prod overlay. It still has to be gated, or
 # "the manifests exist" would be the only thing anyone ever verified about them.
 OPSBRIDGE_DIR=infrastructure/kubernetes/base/opsbridge-api
+# The OpsBridge WEB artefact set is self-contained for the same reason (see
+# infrastructure/kubernetes/base/opsbridge-web/README.md): the image does not
+# exist in a registry yet, so it is deliberately not referenced by the base
+# kustomization and never reaches the prod overlay. It still has to be gated.
+WEB_DIR=infrastructure/kubernetes/base/opsbridge-web
 
-# Usage: validate-manifests.sh [pre-rendered-prod.yaml] [pre-rendered-opsbridge.yaml]
+# Usage: validate-manifests.sh [pre-rendered-prod.yaml] [pre-rendered-opsbridge.yaml] [pre-rendered-web.yaml]
 #
 # With no argument, this script renders the prod overlay itself — the mode CI
 # runs. With a file argument, it validates THAT file instead, which is how
@@ -32,12 +37,16 @@ OPSBRIDGE_DIR=infrastructure/kubernetes/base/opsbridge-api
 # The SECOND argument is the same seam for the OpsBridge set: it overrides the
 # render of $OPSBRIDGE_DIR, so the mutation test can hand the validator a broken
 # OpsBridge manifest and prove the new rules can fail.
+#
+# The THIRD argument is the same seam for the OpsBridge WEB set.
 INPUT_FILE="${1:-}"
 OPSBRIDGE_FILE="${2:-}"
+WEB_FILE="${3:-}"
 
 RENDERED=$(mktemp)
 OB_RENDERED=$(mktemp)
-trap 'rm -f "$RENDERED" "$OB_RENDERED"' EXIT
+WEB_RENDERED=$(mktemp)
+trap 'rm -f "$RENDERED" "$OB_RENDERED" "$WEB_RENDERED"' EXIT
 
 fail=0
 err() { echo "FAIL: $*" >&2; fail=1; }
@@ -96,7 +105,11 @@ doc_of() { doc_of_in "$RENDERED" "$1" "$2"; }
 # trickery. The reasons are printed instead of a boolean because a gate that
 # fails with "invalid" and a gate that fails with "the file is empty (0
 # bytes)" send the reader to very different places.
-opsbridge_render_problem() {
+#
+# The function is generic on purpose: more than one artefact set is validated
+# from its OWN render (the OpsBridge API set in section 9, the OpsBridge web
+# set in section 10), and a copy of this parser per set is a copy that drifts.
+render_problem() {
   if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 is not available, so the render cannot be parsed"
     return 0
@@ -368,7 +381,7 @@ if [ -z "$OB_RENDER_ERROR" ]; then
   # report WHICH rule failed. An empty problem string falls through to the
   # section, whose own "the set has no Job/Deployment/Service" assertions then
   # fail loudly — never silently.
-  OB_RENDER_PROBLEM=$(opsbridge_render_problem "$OB_RENDERED" || true)
+  OB_RENDER_PROBLEM=$(render_problem "$OB_RENDERED" || true)
 fi
 if [ -n "$OB_RENDER_PROBLEM" ]; then
   err "the OpsBridge render (${OB_SOURCE}) is not usable: ${OB_RENDER_PROBLEM}; every section-9 assertion was skipped, so this run must not report PASS"
@@ -491,8 +504,193 @@ if [ -z "$OB_RENDER_ERROR" ] && [ -z "$OB_RENDER_PROBLEM" ]; then
   fi
 fi
 
+# 10. The OpsBridge WEB artefact set (deployment + service + HTTPRoute).
+#
+#     It is NOT part of the prod overlay, for the same reason as the API set
+#     (section 9): the image exists in no registry, and the prod overlay pins
+#     every image by digest (ADR-011). So it is validated here, on its own
+#     render, with the BASE conventions: a registry-neutral image name with
+#     the `placeholder-set-by-overlay` tag, not a digest.
+#
+#     The rules below are the deployment contract of ADR-020, expressed as
+#     assertions a manifest can fail. Each one has a negative control in
+#     scripts/test-validate-manifests.py — a rule nobody can break is a rule
+#     that documents nothing.
+echo "== opsbridge-web artefact set =="
+WEB_RENDER_ERROR=""
+if [ -n "$WEB_FILE" ]; then
+  [ -f "$WEB_FILE" ] || { echo "FAIL: no such rendered web file: $WEB_FILE" >&2; exit 1; }
+  cp "$WEB_FILE" "$WEB_RENDERED"
+  WEB_SOURCE="$WEB_FILE"
+  echo "== validating pre-rendered opsbridge-web input: $WEB_FILE =="
+else
+  WEB_SOURCE="the render of $WEB_DIR"
+  echo "== render $WEB_DIR =="
+  if ! kubectl kustomize "$WEB_DIR" >"$WEB_RENDERED" 2>/tmp/kustomize-web.err; then
+    cat /tmp/kustomize-web.err >&2
+    err "kustomize render of $WEB_DIR failed"
+    WEB_RENDER_ERROR="kustomize render of $WEB_DIR failed"
+  fi
+fi
+
+# An unusable web render must be a FAILURE, for the same reason the OpsBridge
+# one is (section 9): an empty render would make every section-10 assertion
+# vacuous while the script still printed "== RESULT: PASS ==" and exited 0.
+WEB_RENDER_PROBLEM=""
+if [ -z "$WEB_RENDER_ERROR" ]; then
+  WEB_RENDER_PROBLEM=$(render_problem "$WEB_RENDERED" || true)
+fi
+if [ -n "$WEB_RENDER_PROBLEM" ]; then
+  err "the OpsBridge web render (${WEB_SOURCE}) is not usable: ${WEB_RENDER_PROBLEM}; every section-10 assertion was skipped, so this run must not report PASS"
+fi
+
+if [ -z "$WEB_RENDER_ERROR" ] && [ -z "$WEB_RENDER_PROBLEM" ]; then
+  WEB_DEPLOY=$(doc_of_in "$WEB_RENDERED" Deployment opsbridge-web) || WEB_DEPLOY=""
+  WEB_SERVICE=$(doc_of_in "$WEB_RENDERED" Service opsbridge-web) || WEB_SERVICE=""
+  WEB_ROUTE=$(doc_of_in "$WEB_RENDERED" HTTPRoute opsbridge-web) || WEB_ROUTE=""
+
+  # 10a. The three objects must exist. A web tier without a Service is
+  #      unreachable; a web tier without a route is unreachable from outside
+  #      the cluster; a web tier without a Deployment is a manifest set that
+  #      describes nothing.
+  [ -n "$WEB_DEPLOY" ] || err "opsbridge-web set has no Deployment/opsbridge-web"
+  [ -n "$WEB_SERVICE" ] || err "opsbridge-web set has no Service/opsbridge-web"
+  [ -n "$WEB_ROUTE" ] || err "opsbridge-web set has no HTTPRoute/opsbridge-web"
+
+  if [ -n "$WEB_DEPLOY" ]; then
+    # 10b. Base convention: registry-neutral name, placeholder tag. The prod
+    #      overlay's `images:` transformer rewrites it to the pinned digest
+    #      when the image exists.
+    WEB_IMAGE=$(printf '%s' "$WEB_DEPLOY" | grep -E '^[[:space:]]+image: ' | head -1 | sed 's/.*image: //' || true)
+    [ "$WEB_IMAGE" = "opsbridge-web:placeholder-set-by-overlay" ] \
+      || err "Deployment/opsbridge-web image is ${WEB_IMAGE}, not the base convention opsbridge-web:placeholder-set-by-overlay"
+
+    # 10c. The container port is 8080, not 80: the container runs as a
+    #      non-root user and cannot bind a privileged port. The Service maps
+    #      80 -> 8080.
+    printf '%s' "$WEB_DEPLOY" | grep -q "containerPort: 8080" \
+      || err "Deployment/opsbridge-web does not declare containerPort 8080 (the contract is 8080 so the container can run as a non-root user)"
+
+    # 10d. Not privileged. A privileged container is root-equivalent whatever
+    #      the user id says.
+    printf '%s' "$WEB_DEPLOY" | grep -Eq '^[[:space:]]+privileged: true' \
+      && err "Deployment/opsbridge-web sets privileged: true"
+
+    # 10e. Not root, and the uid the tree uses (ADR-007).
+    printf '%s' "$WEB_DEPLOY" | grep -q "runAsNonRoot: true" \
+      || err "Deployment/opsbridge-web does not set runAsNonRoot"
+    printf '%s' "$WEB_DEPLOY" | grep -Eq '^[[:space:]]+runAsUser: ["'\'']?0["'\'']?$' \
+      && err "Deployment/opsbridge-web runs as root (runAsUser: 0)"
+    printf '%s' "$WEB_DEPLOY" | grep -q "runAsUser: 1654" \
+      || err "Deployment/opsbridge-web does not run as uid 1654 (ADR-007)"
+
+    # 10f. Read-only root filesystem. nginx needs a writable scratch area, and
+    #      the manifest provides it with emptyDir volumes — a writable root
+    #      filesystem is the thing that must NOT be the answer.
+    printf '%s' "$WEB_DEPLOY" | grep -q "readOnlyRootFilesystem: true" \
+      || err "Deployment/opsbridge-web does not set readOnlyRootFilesystem: true"
+    printf '%s' "$WEB_DEPLOY" | grep -q "readOnlyRootFilesystem: false" \
+      && err "Deployment/opsbridge-web sets readOnlyRootFilesystem: false"
+
+    # 10g. No host path. A hostPath volume reaches outside the pod: it is a
+    #      node-level escape hatch and the classic way a "read-only" pod still
+    #      writes to the host.
+    printf '%s' "$WEB_DEPLOY" | grep -q "hostPath:" \
+      && err "Deployment/opsbridge-web mounts a host path"
+
+    # 10h. BOTH probes. A Deployment with only a liveness probe publishes a
+    #      pod that cannot serve traffic; one with only a readiness probe
+    #      restarts a pod that is merely busy.
+    printf '%s' "$WEB_DEPLOY" | grep -q "livenessProbe:" \
+      || err "Deployment/opsbridge-web declares no livenessProbe"
+    printf '%s' "$WEB_DEPLOY" | grep -q "readinessProbe:" \
+      || err "Deployment/opsbridge-web declares no readinessProbe"
+
+    # 10i. API_UPSTREAM is an ADDRESS, not a credential. Three separate
+    #      failure modes, three rules:
+    #        * absent — the image falls back to its built-in default upstream
+    #          and silently proxies to the wrong place;
+    #        * read from a Secret — then the "address" is a credential, and a
+    #          credential that has to be templated into a DNS name is a
+    #          credential in a config file;
+    #        * carrying credential material (userinfo, a token in the query
+    #          string) — an address must be an address.
+    printf '%s' "$WEB_DEPLOY" | grep -q "name: API_UPSTREAM" \
+      || err "Deployment/opsbridge-web does not set API_UPSTREAM (the image has no other way to learn where the API is)"
+    printf '%s' "$WEB_DEPLOY" | grep -A1 "name: API_UPSTREAM" | grep -q "valueFrom:" \
+      && err "Deployment/opsbridge-web reads API_UPSTREAM from a Secret; the upstream is an in-cluster address, not a credential"
+    # `|| true`: with `set -e` AND `pipefail`, a manifest with no API_UPSTREAM
+    # would make the assignment itself fail and abort the script before it
+    # could report WHICH rule failed. The checks below are the rules.
+    WEB_UPSTREAM=$(printf '%s' "$WEB_DEPLOY" | grep -A1 "name: API_UPSTREAM" \
+      | grep -E '^[[:space:]]+value:' | head -1 \
+      | sed -E 's/^[[:space:]]*value:[[:space:]]*//' || true)
+    # Credential material, checked FIRST so the message names the real
+    # problem: '@' is userinfo (user:password@host), and the word list covers
+    # a token or a key smuggled into the address.
+    case "$WEB_UPSTREAM" in
+      *@*) err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, which carries credential material (userinfo); the upstream must be a plain in-cluster address" ;;
+    esac
+    printf '%s' "$WEB_UPSTREAM" | grep -Eqi '(password|passwd|secret|token|api[-_]?key|credential)' \
+      && err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, which carries credential material; the upstream must be a plain in-cluster address"
+    # A plain in-cluster address: scheme://host[:port][/path], nothing else.
+    # The character class excludes '@' (userinfo), '?' (query string) and '='
+    # (a query parameter), so this is a STRICTER check than the credential
+    # check above: a query string on an upstream address is meaningless even
+    # when it carries no obvious secret.
+    printf '%s' "$WEB_UPSTREAM" | grep -Eq '^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~:!$&()*+,;%-]*)?$' \
+      || err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, which is not a plain in-cluster address (expected scheme://host[:port])"
+  fi
+
+  if [ -n "$WEB_SERVICE" ]; then
+    # 10j. The Service stays inside the cluster; exposure is the HTTPRoute's
+    #      job, and the HTTPRoute's job is the Gateway's.
+    printf '%s' "$WEB_SERVICE" | grep -q "type: LoadBalancer" \
+      && err "Service/opsbridge-web is exposed as LoadBalancer (public IP)"
+    # 10k. 80 -> 8080: the Service is where the two ports are joined, because
+    #      every backendRef in this tree addresses a Service on port 80.
+    printf '%s' "$WEB_SERVICE" | grep -Eq '^[[:space:]]+port: 80$' \
+      || err "Service/opsbridge-web does not expose port 80 (every backendRef in this tree addresses port 80)"
+    printf '%s' "$WEB_SERVICE" | grep -Eq '^[[:space:]]+targetPort: 8080$' \
+      || err "Service/opsbridge-web does not target port 8080 (the container listens on 8080)"
+    printf '%s' "$WEB_SERVICE" | grep -q "app: opsbridge-web" \
+      || err "Service/opsbridge-web does not select app: opsbridge-web"
+  fi
+
+  if [ -n "$WEB_ROUTE" ]; then
+    # 10l. The route must point at THIS web Service. The check looks inside
+    #      the backendRefs block, so a route whose metadata.name still says
+    #      "opsbridge-web" but whose backendRef points somewhere else is
+    #      caught — a repo-wide grep on the name would not catch it.
+    printf '%s' "$WEB_ROUTE" | grep -q "backendRefs:" \
+      || err "HTTPRoute/opsbridge-web declares no backendRefs"
+    printf '%s' "$WEB_ROUTE" | grep -A3 "backendRefs:" | grep -q "name: opsbridge-web" \
+      || err "HTTPRoute/opsbridge-web does not reference the web Service opsbridge-web"
+    printf '%s' "$WEB_ROUTE" | grep -A3 "backendRefs:" | grep -Eq '^[[:space:]]+port: 80$' \
+      || err "HTTPRoute/opsbridge-web does not address the web Service on port 80"
+    # 10m. No wildcard hostname: a wildcard would expose this application to
+    #      EVERY hostname the shared gateway routes, which is a
+    #      tenant-isolation question this repository has not answered.
+    printf '%s' "$WEB_ROUTE" | grep -Eq '^[[:space:]]*- .*\*' \
+      && err "HTTPRoute/opsbridge-web uses a wildcard hostname"
+    # 10n. The route must be attached to the shared Gateway, like every other
+    #      route in this tree.
+    printf '%s' "$WEB_ROUTE" | grep -q "parentRefs:" \
+      || err "HTTPRoute/opsbridge-web declares no parentRefs (it would never be attached to the gateway)"
+  fi
+
+  # 10o. The web set is cross-referenced with the same object gate the prod
+  #      overlay gets in section 8: resources declared, volumes declared,
+  #      selector matches the pod labels, no LoadBalancer.
+  if ./scripts/validate-objects.py "$WEB_RENDERED"; then
+    :
+  else
+    err "opsbridge-web object cross-reference failed (see FAIL lines above)"
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "== RESULT: FAIL ==" >&2
   exit 1
 fi
-echo "== RESULT: PASS (rendered prod overlay is deployable, and the OpsBridge artefact set satisfies the same migration contract) =="
+echo "== RESULT: PASS (rendered prod overlay is deployable, the OpsBridge API artefact set satisfies the same migration contract, and the OpsBridge web artefact set satisfies the ADR-020 deployment contract) =="
