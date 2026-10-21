@@ -153,10 +153,59 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 // ------------------------------------------------------------------
+// THE JWT SIGNING PARAMETERS ARE READ ONCE, INTO A FROZEN SNAPSHOT.
+//
+// OpsBridgeJwtConfiguration (src/OpsBridge.Infrastructure/Security/) is the
+// single READER of Jwt:SigningKey / Jwt:Issuer / Jwt:Audience. This block
+// takes ONE snapshot of the three values (OpsBridgeJwtSettings) and hands
+// THAT object to both sides:
+//
+//   * the token ISSUER (DependencyInjection.cs), and
+//   * the token VALIDATION path (the AddJwtBearer block below).
+//
+// Why the snapshot and not two reads of the configuration: the two sides used
+// to read it at two different TIMES - the validation path eagerly, while the
+// composition root was built, the issuer lazily, on its first resolution
+// after the host was built. IConfiguration's JSON provider reloads on change,
+// so an appsettings.json plus a key rotation on disk would have made the
+// issuer sign with the NEW key while the validator kept the OLD one: the same
+// defect this work fixed (every token the API minted was rejected by the API
+// itself, IDX10517 -> 401), in a harder-to-see form. One snapshot, handed to
+// both sides, makes the divergence impossible.
+//
+// The Production gates below are UNCHANGED (same conditions, same messages):
+// they are the reason the built-in development key can never reach a
+// Production deployment, and they now apply to the snapshot both sides use.
+var jwtSettings = OpsBridgeJwtConfiguration.Resolve(builder.Configuration);
+var configuredSigningKey = jwtSettings.SigningKey;
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["Jwt:SigningKey"]))
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException("Jwt:SigningKey must be configured in Production.");
+    }
+}
+
+if (builder.Environment.IsProduction() &&
+    string.Equals(configuredSigningKey, OpsBridgeJwtTokenIssuer.DefaultSigningKey, StringComparison.Ordinal))
+{
+    throw new InvalidOperationException("Jwt:SigningKey must not use the built-in development key in Production.");
+}
+
+if (Encoding.UTF8.GetByteCount(configuredSigningKey) < 32)
+{
+    throw new InvalidOperationException("Jwt:SigningKey must contain at least 32 UTF-8 bytes.");
+}
+
+// ------------------------------------------------------------------
 // Clean Architecture Composition Root: OpsBridge API
 // Infrastructure adapters are registered via AddOpsBridgeInfrastructure
 // ------------------------------------------------------------------
-builder.Services.AddOpsBridgeInfrastructure(builder.Configuration);
+// The FROZEN snapshot is passed in, so the issuer is built from the same
+// values the validation path below uses - not from a second read of the
+// configuration at a later moment.
+builder.Services.AddOpsBridgeInfrastructure(builder.Configuration, jwtSettings);
 
 // CORS for Vite frontend
 builder.Services.AddCors(options =>
@@ -171,43 +220,31 @@ builder.Services.AddCors(options =>
 });
 
 // Authentication & Authorization
-var configuredSigningKey = builder.Configuration["Jwt:SigningKey"];
-if (string.IsNullOrWhiteSpace(configuredSigningKey))
-{
-    if (builder.Environment.IsProduction())
-    {
-        throw new InvalidOperationException("Jwt:SigningKey must be configured in Production.");
-    }
-
-    configuredSigningKey = OpsBridgeJwtTokenIssuer.DefaultSigningKey;
-}
-
-if (builder.Environment.IsProduction() &&
-    string.Equals(configuredSigningKey, OpsBridgeJwtTokenIssuer.DefaultSigningKey, StringComparison.Ordinal))
-{
-    throw new InvalidOperationException("Jwt:SigningKey must not use the built-in development key in Production.");
-}
-
-if (Encoding.UTF8.GetByteCount(configuredSigningKey) < 32)
-{
-    throw new InvalidOperationException("Jwt:SigningKey must contain at least 32 UTF-8 bytes.");
-}
-
-var signingKey = configuredSigningKey;
-var issuer = builder.Configuration["Jwt:Issuer"] ?? OpsBridgeJwtTokenIssuer.DefaultIssuer;
-var audience = builder.Configuration["Jwt:Audience"] ?? OpsBridgeJwtTokenIssuer.DefaultAudience;
-
+//
+// THE SIGNING KEY IS READ IN EXACTLY ONE PLACE (OpsBridgeJwtConfiguration,
+// src/OpsBridge.Infrastructure/Security/OpsBridgeJwtConfiguration.cs), and the
+// token ISSUER uses the same reader (DependencyInjection.cs). That is the fix
+// for the defect this block used to hide: the issuer was registered without
+// configuration and always signed with the built-in development key, while
+// this block validated with the CONFIGURED key — so in Production, where the
+// two must differ, every token the API minted was rejected by the API itself
+// (IDX10517 -> 401 on every login).
+//
+// The Production gates therefore apply to BOTH sides: a Production
+// deployment cannot sign with a key it would refuse to validate, and it
+// cannot validate with a key it would refuse to sign with. Both sides read
+// the SAME frozen snapshot (jwtSettings), so they cannot disagree.
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuer = issuer,
+            ValidIssuer = jwtSettings.Issuer,
             ValidateAudience = true,
-            ValidAudience = audience,
+            ValidAudience = jwtSettings.Audience,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.SigningKey)),
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromSeconds(30)
         };

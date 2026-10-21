@@ -447,10 +447,11 @@ def mut_web_host_path(docs):
     """A hostPath volume reaches outside the pod: a node-level escape hatch,
     and the classic way a "read-only" pod still writes to the host."""
     i = find_doc(docs, "Deployment", "opsbridge-web")
-    mount_anchor = "        - mountPath: /tmp\n          name: tmp\n"
-    vol_anchor = "      - emptyDir: {}\n        name: tmp\n"
+    # NB the rendered form is key-sorted: the mountPath precedes the name.
+    mount_anchor = "        - mountPath: /tmp/nginx/run\n          name: nginx-run\n"
+    vol_anchor = "      - emptyDir: {}\n        name: nginx-run\n"
     if mount_anchor not in docs[i] or vol_anchor not in docs[i]:
-        raise KeyError("Deployment doc has no tmp mount/volume to anchor on")
+        raise KeyError("Deployment doc has no nginx-run mount/volume to anchor on")
     docs[i] = docs[i].replace(
         mount_anchor,
         mount_anchor + "        - mountPath: /host\n          name: host-vol\n", 1)
@@ -536,6 +537,61 @@ def mut_web_upstream_from_secret(docs):
         "            secretKeyRef:\n"
         "              key: api-upstream\n"
         "              name: opsbridge-secrets\n", 1)
+    return docs
+
+
+def mut_web_upstream_container_port(docs):
+    """The upstream port must be the SERVICE port, not the container port.
+
+    The image's own default is the container port (8080), which is right for
+    a Docker-to-Docker hop and wrong for Kubernetes: a ClusterIP only answers
+    the ports its Service declares (Service/opsbridge-api declares 80), so
+    :8080 is dropped by kube-proxy. This mutation is the drift the rule
+    exists for, and it is invisible to every other rule in this section: the
+    address is still a plain, credential-free in-cluster address.
+    """
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: http://opsbridge-api:8080", 1)
+    return docs
+
+
+def mut_web_upstream_no_port(docs):
+    """The upstream must carry the port its Service declares.
+
+    `http://opsbridge-api` (no port) is a valid-looking plain address, so
+    every other rule of section 10 lets it through - but a ClusterIP only
+    answers the ports its Service DECLARES, so an upstream without a port
+    cannot resolve to anything.
+
+    This is the negative control for the DEAD BRANCH the port extraction used
+    to hide: the old `sed` left the whole URL in place when there was no
+    port, so the "carries no port" message could never be produced and the
+    validator reported the URL as the port ("whose port is
+    http://opsbridge-api"). The expected message below is the CORRECT one;
+    the garbled one does not contain it.
+    """
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: http://opsbridge-api", 1)
+    return docs
+
+
+def mut_web_upstream_wrong_host(docs):
+    """The upstream must address the API's Service BY NAME.
+
+    A Service's DNS name is its metadata.name; a typo in the host is a proxy
+    that silently points at nothing (or, worse, at something else).
+    """
+    i = find_doc(docs, "Deployment", "opsbridge-web")
+    if "value: http://opsbridge-api:80" not in docs[i]:
+        raise KeyError("Deployment doc has no API_UPSTREAM value")
+    docs[i] = docs[i].replace("value: http://opsbridge-api:80",
+                               "value: http://opsbridge-api-typo:80", 1)
     return docs
 
 
@@ -652,6 +708,9 @@ WEB_MUTATIONS = [
     ("web_upstream_token", "carries credential material", mut_web_upstream_token),
     ("web_upstream_not_an_address", "is not a plain in-cluster address", mut_web_upstream_not_an_address),
     ("web_upstream_from_secret", "reads API_UPSTREAM from a Secret", mut_web_upstream_from_secret),
+    ("web_upstream_container_port", "a ClusterIP only answers the ports its Service declares", mut_web_upstream_container_port),
+    ("web_upstream_no_port", "which carries no port", mut_web_upstream_no_port),
+    ("web_upstream_wrong_host", "whose host is opsbridge-api-typo", mut_web_upstream_wrong_host),
     ("web_service_loadbalancer", "is exposed as LoadBalancer", mut_web_service_loadbalancer),
     ("web_service_wrong_port", "does not expose port 80", mut_web_service_wrong_port),
     ("web_service_wrong_target_port", "does not target port 8080", mut_web_service_wrong_target_port),

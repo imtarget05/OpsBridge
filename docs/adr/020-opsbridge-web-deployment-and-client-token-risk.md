@@ -94,17 +94,43 @@ the API, with the upstream configurable at runtime.**
   mechanism. It is a plain in-cluster **address**, not a credential: it is set
   as a literal value in the Deployment, never read from a Secret. The web pod
   holds no Secret at all.
+- **Which port the upstream names depends on what the upstream IS.** The image
+  defaults to `http://opsbridge-api:8080` — the API's **container** port, which
+  is the right address for a Docker-to-Docker hop (a container is reachable on
+  the port it listens on) and is what the CI `opsbridge-stack-smoke` job uses.
+  The **manifest** sets `http://opsbridge-api:80` — the API **Service** port,
+  because a ClusterIP only answers the ports its Service declares
+  (`Service/opsbridge-api`: `port: 80` → `targetPort: 8080`), and a connection
+  to `:8080` would be dropped by kube-proxy even though the pod behind the
+  Service is listening on 8080. The rule is one line: **a ClusterIP address
+  uses the Service port; a container address uses the container port.** The
+  two halves are compatible only because the manifest sets the variable
+  explicitly — nothing about the image's default makes it right for
+  Kubernetes — and the validator asserts that the manifest's port is the port
+  the API's own Service declares.
 - The **Service** is `ClusterIP`, exposing port **80 → targetPort 8080**. Port
   80 is what every `backendRef` in this tree addresses; the 80 → 8080 mapping
-  is the Service's job and nowhere else. (`API_UPSTREAM` therefore names the
-  **Service** port — `http://opsbridge-api:80` — not the container port:
-  a ClusterIP only listens on the ports its Service declares.)
+  is the Service's job and nowhere else.
 - The workload runs with `readOnlyRootFilesystem: true`,
   `allowPrivilegeEscalation: false`, `capabilities: drop [ALL]`,
-  `runAsNonRoot: true`, `runAsUser: 1654`, and the three writable paths nginx
-  needs (`/var/cache/nginx`, `/var/run`, `/tmp`) as `emptyDir` volumes. The
-  exact paths and the exact nginx failure each one prevents are in
+  `runAsNonRoot: true`, `runAsUser: 1654`, `runAsGroup: 1654`,
+  `fsGroup: 1654`, and **exactly the three paths the image declares as
+  writable** as three separate `emptyDir` volumes:
+  `/tmp/nginx/conf.d` (the rendered server block), `/tmp/nginx/cache` (the
+  nginx temp directories) and `/tmp/nginx/run` (the pid file). The exact paths
+  and the exact nginx failure each one prevents are in
   `infrastructure/kubernetes/base/opsbridge-web/README.md` §3.
+  **The three are mounted one by one, and `/tmp` is never mounted wholesale:**
+  an `emptyDir` at `/tmp` *replaces* the image's whole `/tmp` tree, so the
+  directories the image created and chowned at build time disappear and the
+  container is left with a volume it would have to create them in itself —
+  the very thing `readOnlyRootFilesystem: true` forbids. `/var/cache/nginx` and
+  `/var/run` are the *stock* nginx image's paths; this image does not write to
+  them, so mounting them would grant writable directories the container never
+  uses. The contract is enforced in both directions by
+  `src/OpsBridge.Web/contract/image-manifest-contract.test.mjs`, which reads
+  `Dockerfile.web` and fails when the image and the manifest disagree about
+  the set of writable paths.
 - Routing is **Gateway API `HTTPRoute`**, matching the rest of this
   repository — `parentRefs: [{name: portfolio-gateway}]`, a concrete hostname
   (never a wildcard), and one rule with `backendRefs: [{name: opsbridge-web,
@@ -143,15 +169,25 @@ front end, that is the cheaper trade.
 
 ### The security headers the image must set
 
-The image — nginx, not Kubernetes — must send, on every response:
+The image — nginx, not Kubernetes — must send, on every response. The values
+below are **exactly** what the image sends today, read off a running container
+(`curl -sI http://127.0.0.1:18081/` against `opsbridge-web:stack-smoke`):
 
 | Header | Value |
 |---|---|
-| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'` |
+| `Content-Security-Policy` | `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'` |
 | `X-Content-Type-Options` | `nosniff` |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Referrer-Policy` | `no-referrer` |
 | `X-Frame-Options` | `DENY` (legacy fallback for `frame-ancestors 'none'`) |
-| `Permissions-Policy` | `geolocation=(), camera=(), microphone=(), payment=()` |
+| `Permissions-Policy` | `geolocation=(), camera=(), microphone=(), payment=(), usb=()` |
+
+**This policy is STRICTER than the one this ADR used to claim.** The earlier
+version of this table listed `style-src 'self' 'unsafe-inline'` and omitted
+`frame-src 'none'`, `form-action 'self'`, `manifest-src 'self'` and
+`worker-src 'self'`. The image never sent that: it sends `style-src 'self'`
+— **no** `'unsafe-inline'` — plus those four extra directives. The
+documentation was understating the shipped strictness, which is the wrong way
+round for a document that is supposed to be the record of what is deployed.
 
 **What a CSP buys.** `script-src 'self'` with **no `'unsafe-inline'` and no
 `'unsafe-eval'`** means a script may only come from this origin, and inline
@@ -173,10 +209,25 @@ before the build: that code is same-origin by definition. And `'unsafe-inline'`
 in `script-src` — which many Vite/React setups need and which this ADR
 forbids — would reduce the policy to a speed bump.
 
-**`style-src` keeps `'unsafe-inline'`.** Inline styles are common in React
+**`style-src` does NOT keep `'unsafe-inline'`.** This ADR previously claimed
+that inline styles were allowed because "inline styles are common in React
 component libraries, and a stylesheet cannot execute script in a modern
-browser. That is a deliberate, stated trade: the script policy is strict, the
-style policy is not.
+browser", and that this was "a deliberate, stated trade: the script policy is
+strict, the style policy is not". **That claim was false against the merged
+image**: the shipped policy is `style-src 'self'`, and there is **no**
+`'unsafe-inline'` anywhere in the policy the image sends. The trade-off was
+never made — the image simply never allowed it.
+
+The strict style policy works because the built bundle needs it to: Vite emits
+the styles as a stylesheet, and the application uses Tailwind utility classes
+rather than inline `style` attributes. If a future change ever needed an
+inline style, the honest options would be to (a) move it into a CSS class, or
+(b) change the policy **and this ADR and the README with it** — not to let a
+document keep describing a policy the image does not send.
+
+**`Permissions-Policy` denies five features, not four.** The image sends
+`geolocation=(), camera=(), microphone=(), payment=(), usb=()` — `usb=()` was
+missing from the earlier version of this table.
 
 ## The accepted risk (stated plainly)
 
@@ -211,6 +262,16 @@ does not claim it is done.
   enforces (`scripts/validate-manifests.sh` section 10) with a negative
   control proving it can fail
   (`scripts/test-validate-manifests.py`).
+- **The image and the manifest cannot drift apart silently any more.** Two
+  controls bind them: the contract test
+  (`src/OpsBridge.Web/contract/image-manifest-contract.test.mjs`), which reads
+  `Dockerfile.web` and fails when the Deployment's mounts are not exactly the
+  writable paths the image declares, in either direction; and the validator's
+  rule 10p, which fails the manifest when `API_UPSTREAM`'s port is not the
+  port the API's own Service declares. The CI `opsbridge-stack-smoke` job
+  rehearses the **manifest** — its security context, its three volume mounts
+  and its upstream — rather than the image's own layout, so a mismatch shows
+  up on the runner instead of in a cluster.
 - The web set is **self-contained**: it is not referenced by
   `infrastructure/kubernetes/base/kustomization.yaml` and not by any overlay,
   because the image exists in no registry and the prod overlay pins every

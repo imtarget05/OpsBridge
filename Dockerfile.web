@@ -22,11 +22,42 @@
 #                    /tmp/nginx/cache             (nginx temp directories)
 #                    /tmp/nginx/run               (the pid file)
 #   upstream         $API_UPSTREAM, default http://opsbridge-api:8080
+#                    (the CONTAINER port - see "THE UPSTREAM PORT" below)
 #
 # The three writable paths are the ONLY paths the container writes to, which
 # is what makes the pod work with readOnlyRootFilesystem: true. Each of them
 # must be an emptyDir volume in the manifest (with fsGroup: 1654, so uid 1654
-# can write into them).
+# can write into them) - and they must be mounted ONE BY ONE: mounting /tmp
+# wholesale would replace the whole /tmp tree of this image, so the
+# pre-created, pre-owned conf.d, cache and run directories would be gone.
+#
+# ---------------------------------------------------------------------------
+# THE UPSTREAM PORT: CONTAINER PORT OR SERVICE PORT?
+#
+# Both numbers are correct, in their own world, and which one applies depends
+# on WHAT THE UPSTREAM IS:
+#
+#   * A CONTAINER (Docker-to-Docker - what the CI stack-smoke job does): the
+#     peer is reachable on the port it LISTENS on. The API image listens on
+#     8080 (Dockerfile.opsbridge: EXPOSE 8080), so
+#     `http://opsbridge-api:8080` is the right address for that hop. This is
+#     the image's default, because a container-to-container hop is what an
+#     image can know about on its own.
+#
+#   * A SERVICE (Kubernetes - what the manifest does): a ClusterIP only
+#     answers the ports its Service DECLARES. Service/opsbridge-api declares
+#     `port: 80` (-> targetPort 8080), so the in-cluster address of the API
+#     is `http://opsbridge-api:80`. A connection to
+#     `http://opsbridge-api:8080` would be DROPPED by kube-proxy, even though
+#     the pod behind the Service is listening on 8080.
+#
+# THE RULE: a ClusterIP address uses the SERVICE port; a container address
+# uses the CONTAINER port. The Kubernetes manifest therefore sets
+# API_UPSTREAM EXPLICITLY - it has to, because the image's default would be
+# wrong there - and the validator (scripts/validate-manifests.sh, rule 10p)
+# asserts that the port the manifest uses is the port the API's own Service
+# declares.
+# ---------------------------------------------------------------------------
 #
 # Same shape as the other images of the repository (Dockerfile,
 # Dockerfile.payment, Dockerfile.opsbridge): a build stage and a runtime stage,
@@ -70,7 +101,9 @@ RUN npm run build
 FROM nginx:1.27-alpine AS final
 
 # The one runtime knob of the web tier: where the API is. The default is the
-# Kubernetes Service name of the API tier.
+# API's CONTAINER port (8080) - correct for a Docker-to-Docker hop, and
+# explicitly overridden by the Kubernetes manifest with the SERVICE port (80).
+# See "THE UPSTREAM PORT" in the contract block above.
 ENV API_UPSTREAM=http://opsbridge-api:8080 \
     NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx/conf.d
 

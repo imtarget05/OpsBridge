@@ -342,13 +342,22 @@ jobs:
   #                                                        ->  Chromium
   #
   # Design notes that are load-bearing, not decoration:
-  #   * The web container runs with --read-only and the three writable paths
-  #     mounted as tmpfs. That is the Kubernetes contract (readOnlyRootFilesystem
-  #     + three emptyDir volumes), rehearsed on the runner: if the image ever
-  #     starts writing outside /tmp, THIS job goes red before the cluster does.
+  #   * The web container runs with the MANIFEST's security context and the
+  #     manifest's volume mounts: --read-only (readOnlyRootFilesystem: true),
+  #     --user 1654:1654 (runAsUser/runAsGroup: 1654), --cap-drop ALL
+  #     (capabilities.drop: [ALL]), --security-opt no-new-privileges
+  #     (allowPrivilegeEscalation: false) and the THREE emptyDir-equivalent
+  #     tmpfs mounts of infrastructure/kubernetes/base/opsbridge-web/
+  #     deployment.yaml (/tmp/nginx/conf.d, /tmp/nginx/cache, /tmp/nginx/run).
+  #     /tmp is deliberately NOT mounted wholesale: that replaces the image's
+  #     whole /tmp tree, and with it the three directories the image creates
+  #     and chowns to uid 1654. The job rehearses the MANIFEST, not the image.
   #   * API_UPSTREAM points at the API CONTAINER, not at 127.0.0.1: the browser
   #     reaches the API through nginx, and nginx reaches the API over the
-  #     docker network. PLAYWRIGHT_BASE_URL points at the published port of
+  #     docker network. The PORT is the container port (8080), which is the
+  #     right one for a Docker-to-Docker hop; the Kubernetes manifest uses the
+  #     SERVICE port (80), because a ClusterIP only answers the ports its
+  #     Service declares. PLAYWRIGHT_BASE_URL points at the published port of
   #     the web container, and playwright.config.ts then SKIPS the Vite
   #     dev server entirely - so the journey cannot accidentally be proven
   #     against the dev server again.
@@ -436,25 +445,63 @@ jobs:
           docker run --rm --network "${STACK_NETWORK}" \
             -e "ConnectionStrings__OpsBridgeDb=Host=${PG_CONTAINER};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}" \
             opsbridge-api:stack-smoke --migrate
+      - name: Generate a real JWT signing key for this run
+        # The API SIGNS with the configured key as well as VALIDATING with it:
+        # OpsBridgeJwtConfiguration (src/OpsBridge.Infrastructure/Security/)
+        # is the single reader of Jwt:SigningKey / Jwt:Issuer / Jwt:Audience,
+        # and it is read ONCE into a frozen snapshot (OpsBridgeJwtSettings)
+        # that both the issuer (DependencyInjection.cs) and the validation
+        # path (src/OpsBridge.Api/Program.cs) are handed. One snapshot, two
+        # consumers: the two sides cannot drift apart.
+        #
+        # Before that, the issuer was registered with NO configuration and
+        # always signed with the built-in development key, while Program.cs
+        # validated with the CONFIGURED key. In Production the two cannot be
+        # equal (Program.cs refuses the built-in key there), so every token
+        # the API issued was rejected by the API itself: IDX10517 -> 401 on
+        # every login. This job used to work around that by reading the
+        # built-in key out of the SOURCE at run time - which hid the defect
+        # behind a key that no deployment would ever use.
+        #
+        # The workaround is gone. The key below is a REAL one, generated per
+        # run, at least 32 bytes long and NOT the built-in development key -
+        # so this job now fails if the API ever signs with anything other than
+        # the key it validates with. It is generated rather than written as a
+        # literal, so no secret ends up in the workflow file (the Trivy secret
+        # scanner of the security-scan job would eventually flag a literal).
+        run: |
+          set -euo pipefail
+          key="$(openssl rand -base64 48 | tr -d '\n')"
+          [ "${#key}" -ge 32 ] || { echo "FAIL: the generated signing key is shorter than 32 bytes"; exit 1; }
+          case "${key}" in
+            *OpsBridge-Secret-Key-Must-Be-At-Least-32-Bytes-Long-For-HMAC-SHA256\!) echo "FAIL: the generated key is the built-in development key"; exit 1;;
+          esac
+          echo "JWT_SIGNING_KEY=${key}" >> "$GITHUB_ENV"
       - name: Start the API container
         run: |
           set -euo pipefail
-          # The API VALIDATES tokens with Jwt__SigningKey, but it MINTS them
-          # with the built-in development key: OpsBridgeJwtTokenIssuer is
-          # registered without configuration (DependencyInjection.cs), so it
-          # always uses its own default. A key that differs from the built-in
-          # one therefore makes every token the API issues invalid (401) -
-          # which is exactly what the first rehearsal of this job showed.
-          # The key is therefore read from the source of truth instead of
-          # being written into this workflow (a literal in a workflow file is
-          # also what the Trivy secret scanner of the security-scan job
-          # would eventually flag).
-          signing_key=$(sed -n 's/.*DefaultSigningKey = "\(.*\)";.*/\1/p' \
-            src/OpsBridge.Infrastructure/Security/OpsBridgeJwtTokenIssuer.cs)
-          [ -n "${signing_key}" ] || { echo "FAIL: the built-in development signing key was not found"; exit 1; }
-          docker run -d --name "${API_CONTAINER}" --network "${STACK_NETWORK}" -p "${API_PORT}:8080" \
+          # --network-alias opsbridge-api: the API answers on the SAME DNS name
+          # the Kubernetes manifest uses (the API Service's name). The only
+          # difference is the PORT, and that difference is the whole point:
+          #
+          #   * here the upstream is the API CONTAINER, so it is reachable on
+          #     the port the container LISTENS on (8080 - Dockerfile.opsbridge
+          #     exposes 8080). Docker-to-Docker.
+          #   * in Kubernetes the upstream is the API ClusterIP SERVICE, and a
+          #     ClusterIP only answers the ports its Service DECLARES -
+          #     Service/opsbridge-api declares `port: 80` -> targetPort 8080.
+          #     So the manifest's API_UPSTREAM is http://opsbridge-api:80.
+          #
+          # The image's own default (http://opsbridge-api:8080) is the
+          # CONTAINER port, which is why the manifest sets the variable
+          # explicitly. The validator (rule 10p) asserts that the manifest's
+          # port is the Service's port.
+          docker run -d --name "${API_CONTAINER}" --network "${STACK_NETWORK}" \
+            --network-alias opsbridge-api -p "${API_PORT}:8080" \
             -e "ConnectionStrings__OpsBridgeDb=Host=${PG_CONTAINER};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD}" \
-            -e "Jwt__SigningKey=${signing_key}" \
+            -e "Jwt__SigningKey=${JWT_SIGNING_KEY}" \
+            -e "Jwt__Issuer=OpsBridge.Api" \
+            -e "Jwt__Audience=OpsBridge.Web" \
             -e ASPNETCORE_ENVIRONMENT=Development \
             -e ASPNETCORE_URLS=http://+:8080 \
             opsbridge-api:stack-smoke
@@ -466,16 +513,37 @@ jobs:
           done
           echo "FAIL: the API never became healthy"; docker logs "${API_CONTAINER}"; exit 1
       - name: Start the web container (nginx in front of the API)
-        # --read-only plus the three writable paths: this is the Kubernetes
-        # contract (readOnlyRootFilesystem: true + three emptyDir volumes at
-        # /tmp/nginx/conf.d, /tmp/nginx/cache and /tmp/nginx/run), rehearsed
-        # here so the image cannot drift away from it unnoticed.
+        # THE MANIFEST, REHEARSED. Not the image's own layout: this container
+        # runs with the security context and the volume mounts of
+        # infrastructure/kubernetes/base/opsbridge-web/deployment.yaml, so the
+        # merge of the two halves is proven here instead of in a cluster.
+        #
+        #   --read-only                    <- readOnlyRootFilesystem: true
+        #   --user 1654:1654               <- runAsUser / runAsGroup: 1654
+        #   --cap-drop ALL                 <- capabilities.drop [ALL]
+        #   --security-opt no-new-privileges <- allowPrivilegeEscalation: false
+        #   --tmpfs <the three paths>      <- the three emptyDir volumes
+        #
+        # The three tmpfs mounts are the ones the IMAGE declares (the writable
+        # paths it creates and chowns to uid 1654):
+        #   /tmp/nginx/conf.d  the rendered server block
+        #   /tmp/nginx/cache   the nginx temp directories
+        #   /tmp/nginx/run     the pid file
+        # /tmp is deliberately NOT mounted wholesale: that would replace the
+        # image's whole /tmp tree and take the three directories with it.
+        # The tmpfs options (uid/gid/mode) stand in for the manifest's
+        # fsGroup: 1654, which is what makes an emptyDir group-writable.
         run: |
           set -euo pipefail
           docker run -d --name "${WEB_CONTAINER}" --network "${STACK_NETWORK}" -p "${WEB_PORT}:8080" \
             --read-only \
-            --tmpfs /tmp/nginx/conf.d --tmpfs /tmp/nginx/cache --tmpfs /tmp/nginx/run \
-            -e "API_UPSTREAM=http://${API_CONTAINER}:8080" \
+            --user 1654:1654 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp/nginx/conf.d:uid=1654,gid=1654,mode=0770 \
+            --tmpfs /tmp/nginx/cache:uid=1654,gid=1654,mode=0770 \
+            --tmpfs /tmp/nginx/run:uid=1654,gid=1654,mode=0770 \
+            -e "API_UPSTREAM=http://opsbridge-api:8080" \
             opsbridge-web:stack-smoke
           for i in $(seq 1 60); do
             if curl -sf -m 3 "http://127.0.0.1:${WEB_PORT}/healthz" >/dev/null 2>&1; then
@@ -487,6 +555,17 @@ jobs:
       - name: Install the web dependencies
         working-directory: src/OpsBridge.Web
         run: npm ci
+      - name: Assert the image/manifest volume contract
+        # The control that stops the image and the manifest from drifting
+        # apart: the contract test reads Dockerfile.web, works out which
+        # paths the image creates and owns, and fails when the Deployment's
+        # mountPaths are not exactly that set (in either direction).
+        #
+        # This is the test that would have caught the first version of the
+        # web manifest, which mounted /var/cache/nginx, /var/run and /tmp
+        # instead of the three paths the image declares.
+        working-directory: src/OpsBridge.Web
+        run: npm run test:contract
       - name: Type-check the Playwright specs
         working-directory: src/OpsBridge.Web
         run: npm run typecheck:e2e
@@ -932,6 +1011,60 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Render and validate the prod overlay
         run: ./scripts/validate-manifests.sh
+      - name: Install kubeconform (the schema validator)
+        # The manifest validator above checks the CONTRACT of the manifests
+        # (the names, the ports, the mounts, the hardening). It does not check
+        # that the manifests are VALID against the Kubernetes schema: a typo
+        # in a field name, a wrong type, an unknown key — none of that is
+        # visible to a grep. kubeconform is, and a manifest that does not
+        # validate is a manifest the API server rejects at apply time.
+        #
+        # The version is pinned and the download is CHECKSUM-VERIFIED against
+        # the release's own CHECKSUMS file: a gate that downloads an
+        # unverified binary is a supply-chain hole, not a gate.
+        run: |
+          set -euo pipefail
+          version="v0.8.0"
+          asset="kubeconform-linux-amd64.tar.gz"
+          base="https://github.com/yannh/kubeconform/releases/download/${version}"
+          curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
+          curl -fsSL -o /tmp/CHECKSUMS "${base}/CHECKSUMS"
+          # The checksum line names the asset by its bare file name, and
+          # `sha256sum --check` resolves it against the CURRENT directory.
+          # The archive was downloaded to /tmp, so the check has to run there -
+          # otherwise it reports "No such file or directory" for a file that is
+          # present, and the gate fails for a reason that has nothing to do with
+          # the manifests.
+          ( cd /tmp && grep " ${asset}\$" CHECKSUMS | sha256sum --check --strict )
+          tar -xzf "/tmp/${asset}" -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: Validate the rendered manifests against the schema catalog
+        # `-strict` means "no unknown fields": the strict schemas reject a
+        # key that does not exist, which is exactly the class of typo a grep
+        # cannot see.
+        #
+        # The Gateway API CRDs (HTTPRoute) are NOT in the Kubernetes schema
+        # catalog, so a second schema location is needed — without it
+        # kubeconform exits 1 on every HTTPRoute ("could not find schema").
+        # The location is PINNED to a commit of the CRD catalog, so the gate
+        # cannot start failing (or passing) because an upstream branch moved.
+        run: |
+          set -euo pipefail
+          kubectl kustomize infrastructure/kubernetes/overlays/prod > /tmp/rendered-prod.yaml
+          kubectl kustomize infrastructure/kubernetes/base/opsbridge-api > /tmp/rendered-opsbridge-api.yaml
+          kubectl kustomize infrastructure/kubernetes/base/opsbridge-web > /tmp/rendered-opsbridge-web.yaml
+          kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/501527ab9c40c827144c8f45945b25a023e344ce/{{ .Group }}/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json' \
+            /tmp/rendered-prod.yaml \
+            /tmp/rendered-opsbridge-api.yaml \
+            /tmp/rendered-opsbridge-web.yaml
+      - name: Mutation-test the manifest validator
+        # A rule that cannot fail documents nothing: every assertion of the
+        # validator gets a broken manifest it has to catch. This is what
+        # proves the new web rules (the API_UPSTREAM port against the API
+        # Service's own port) are real controls and not decoration.
+        run: python3 scripts/test-validate-manifests.py
 
   ci-gate:
     needs:

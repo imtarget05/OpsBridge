@@ -14,6 +14,16 @@
 #     (the client calls `/api/v1/...` — see
 #     src/OpsBridge.Web/src/lib/api-client.ts:19), so the API sees the path it
 #     expects;
+#   * `API_UPSTREAM` names the API's **SERVICE** address and port
+#     (`http://opsbridge-api:80`), not its container port (8080): a ClusterIP
+#     only answers the ports its Service declares, so `http://opsbridge-api:8080`
+#     is dropped by kube-proxy even though the pod is listening there. The
+#     image's own default (`http://opsbridge-api:8080`) is the CONTAINER port,
+#     which is the right address for a Docker-to-Docker hop and the wrong one
+#     for Kubernetes — which is exactly why this manifest sets the variable
+#     explicitly instead of relying on the default;
+#   * exactly three paths are writable — the three the image declares — and
+#     they are mounted as three separate `emptyDir`s (see `volumeMounts`);
 #   * every other path falls back to index.html (client-side routing: a deep
 #     link such as /invoices must return the shell, not a 404);
 #   * `/healthz` answers 200;
@@ -95,26 +105,47 @@ spec:
             - name: API_UPSTREAM
               value: http://opsbridge-api:80
           volumeMounts:
-            # readOnlyRootFilesystem=true means nginx cannot create its own
-            # scratch directories, and it refuses to start if it cannot:
-            #   mkdir() "/var/cache/nginx/client_temp" failed (30: Read-only
-            #   file system)
-            # The stock nginx image puts client_body/proxy/fastcgi/uwsgi/scgi
-            # temp paths under /var/cache/nginx, so that whole tree has to be
-            # writable. This is the single volume that MUST exist.
+            # THE VOLUME CONTRACT: exactly the three paths the image declares
+            # as writable, and nothing else.
+            #
+            # The image (Dockerfile.web) creates these three directories at
+            # build time and chowns them to opsbridge:opsbridge (uid/gid
+            # 1654):
+            #
+            #   /tmp/nginx/conf.d   the rendered server block (the envsubst
+            #                       output directory, NGINX_ENVSUBST_OUTPUT_DIR)
+            #   /tmp/nginx/cache    the nginx temp directories (client_body,
+            #                       proxy, fastcgi, uwsgi, scgi)
+            #   /tmp/nginx/run      the pid file (/tmp/nginx/run/nginx.pid)
+            #
+            # They are mounted SEPARATELY, on purpose:
+            #
+            #   * mounting them separately keeps the image's own directories
+            #     in place (each mount hides only the path it covers, and the
+            #     emptyDir that replaces it is writable by uid 1654 because
+            #     of fsGroup below);
+            #   * mounting /tmp WHOLESALE would be a different thing
+            #     altogether: an emptyDir at /tmp REPLACES the image's whole
+            #     /tmp tree, so the pre-created, pre-owned conf.d, cache and
+            #     run directories disappear and the container is left with a
+            #     volume it has to create them in itself - the very thing
+            #     readOnlyRootFilesystem forbids;
+            #   * /var/cache/nginx and /var/run are the STOCK nginx image's
+            #     paths. This image does not use them (nginx.conf points the
+            #     temp paths and the pid file at /tmp/nginx), so mounting them
+            #     gives the container writable directories it never writes to
+            #     and hides nothing that matters.
+            #
+            # The contract is asserted, not just documented: the contract test
+            # (src/OpsBridge.Web/contract/image-manifest-contract.test.mjs)
+            # reads Dockerfile.web and fails when the two sides drift apart in
+            # either direction.
+            - name: nginx-conf-d
+              mountPath: /tmp/nginx/conf.d
             - name: nginx-cache
-              mountPath: /var/cache/nginx
-            # The stock nginx.conf writes its pid file to /var/run/nginx.pid.
-            # With a read-only root filesystem that write fails and nginx exits
-            # ("[emerg] open() "/var/run/nginx.pid" failed (30: Read-only file
-            # system)"). The image MAY instead point `pid` at /tmp — in which
-            # case this mount is unused, and that is harmless.
+              mountPath: /tmp/nginx/cache
             - name: nginx-run
-              mountPath: /var/run
-            # The conventional scratch path, and the fallback location for a
-            # pid file. Also what a `--tmpfs /tmp` equivalent would give.
-            - name: tmp
-              mountPath: /tmp
+              mountPath: /tmp/nginx/run
           resources:
             requests:
               cpu: 50m
@@ -145,9 +176,13 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
       volumes:
+        # emptyDir, not hostPath and not a persistent volume: these are scratch
+        # directories whose contents die with the pod. Nothing is written to
+        # the node, and a pod that is rescheduled starts with empty scratch
+        # space.
+        - name: nginx-conf-d
+          emptyDir: {}
         - name: nginx-cache
           emptyDir: {}
         - name: nginx-run
-          emptyDir: {}
-        - name: tmp
           emptyDir: {}

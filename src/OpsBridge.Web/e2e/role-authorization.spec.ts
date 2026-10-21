@@ -33,6 +33,18 @@ import { signInAs, UI_TIMEOUT } from './support';
  * permission banner that the components render for the role that lacks the
  * permission (the action itself is not asserted, because a discrepancy /
  * dead-letter row only exists once the domain has such data).
+ *
+ * WHY THE ABSENCE ASSERTIONS WAIT FOR THE PAGE
+ * ---------------------------------------------
+ * "The banner is not there" is only evidence if the page HAS rendered. A
+ * `toHaveCount(0)` assertion returns as soon as the count is zero - and the
+ * count is zero while the page is still loading - so it passed for the wrong
+ * reason: it could not distinguish "this role may not do it" from "the page
+ * has not rendered yet". Every absence assertion below therefore waits for
+ * the page's own heading first, and only then asserts that the banner is
+ * absent. That makes the spec independent of the loading speed AND of any
+ * pre-existing rows in the database: it asserts what the UI renders for a
+ * role, and nothing else.
  */
 test.describe('role-based permissions in the browser', () => {
   test('operator may replay dead letters but not approve variances; finance reviewer is the other way round', async ({
@@ -43,6 +55,17 @@ test.describe('role-based permissions in the browser', () => {
     const readOnlyBanner = page.getByText(/Read-Only: Switch to/);
     const replayLockBanner = page.getByText(/Operator or Admin role required to replay DLQ/);
 
+    // The headings the two screens are identified by. Waiting for them is
+    // what makes the absence assertions below meaningful.
+    const discrepanciesHeading = page.getByRole('heading', {
+      name: 'Discrepancy Investigation & Review',
+      level: 1,
+    });
+    const integrationsHeading = page.getByRole('heading', {
+      name: 'Integration Operations & Event Mesh',
+      level: 1,
+    });
+
     // ---------------------------------------------------------------- Operator
     await signInAs(page, 'Operator');
     // The navbar role switcher holds the role of the signed-in user.
@@ -50,10 +73,12 @@ test.describe('role-based permissions in the browser', () => {
 
     // Operator lacks the Review permission -> the discrepancies screen is read-only.
     await page.goto('/discrepancies');
+    await expect(discrepanciesHeading).toBeVisible({ timeout: UI_TIMEOUT });
     await expect(readOnlyBanner).toBeVisible({ timeout: UI_TIMEOUT });
 
     // Operator HAS the replay permission -> no lock on the integration screen.
     await page.goto('/integrations');
+    await expect(integrationsHeading).toBeVisible({ timeout: UI_TIMEOUT });
     await expect(replayLockBanner).toHaveCount(0, { timeout: UI_TIMEOUT });
 
     // ------------------------------------------------------- FinanceReviewer
@@ -65,10 +90,12 @@ test.describe('role-based permissions in the browser', () => {
 
     // FinanceReviewer holds the Review permission -> no read-only banner.
     await page.goto('/discrepancies');
+    await expect(discrepanciesHeading).toBeVisible({ timeout: UI_TIMEOUT });
     await expect(readOnlyBanner).toHaveCount(0, { timeout: UI_TIMEOUT });
 
     // FinanceReviewer cannot replay dead letters -> the lock banner is shown.
     await page.goto('/integrations');
+    await expect(integrationsHeading).toBeVisible({ timeout: UI_TIMEOUT });
     await expect(replayLockBanner).toBeVisible({ timeout: UI_TIMEOUT });
   });
 });

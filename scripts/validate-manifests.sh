@@ -640,6 +640,57 @@ if [ -z "$WEB_RENDER_ERROR" ] && [ -z "$WEB_RENDER_PROBLEM" ]; then
     # when it carries no obvious secret.
     printf '%s' "$WEB_UPSTREAM" | grep -Eq '^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~:!$&()*+,;%-]*)?$' \
       || err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, which is not a plain in-cluster address (expected scheme://host[:port])"
+
+    # 10p. The upstream must address the API's SERVICE, on the port that
+    #      SERVICE declares.
+    #
+    #      This is the rule that keeps the image's default and the manifest
+    #      from being confused with each other:
+    #
+    #        * the IMAGE's default is the API's CONTAINER port (8080) - the
+    #          right address for a Docker-to-Docker hop;
+    #        * the MANIFEST must use the API's SERVICE port (80) - because a
+    #          ClusterIP only answers the ports its Service DECLARES. A
+    #          connection to :8080 is dropped by kube-proxy, even though the
+    #          pod behind the Service is listening on 8080.
+    #
+    #      So the two halves are compatible only because the manifest sets the
+    #      variable explicitly, and the port it sets has to be the Service's
+    #      port. The Service is the OpsBridge API one (Service/opsbridge-api),
+    #      which section 9 renders; if that render is unusable the rule below
+    #      FAILS rather than passing silently.
+    OB_API_SERVICE=$(doc_of_in "$OB_RENDERED" Service opsbridge-api) || OB_API_SERVICE=""
+    if [ -z "$OB_API_SERVICE" ]; then
+      err "the API Service/opsbridge-api could not be read, so the API_UPSTREAM port of Deployment/opsbridge-web could not be checked"
+    else
+      OB_API_SERVICE_NAME=$(printf '%s' "$OB_API_SERVICE" | grep -E '^  name: ' | head -1 | sed -E 's/^  name: //' || true)
+      OB_API_SERVICE_PORT=$(printf '%s' "$OB_API_SERVICE" | grep -E '^[[:space:]]+port: [0-9]+$' | head -1 | sed -E 's/^[[:space:]]+port: //' || true)
+
+      # The host of the upstream must be the API Service's name: the upstream
+      # addresses a Service, and the Service's name is its DNS name.
+      WEB_UPSTREAM_HOST=$(printf '%s' "$WEB_UPSTREAM" | sed -E 's#^https?://([^:/]+).*$#\1#' || true)
+      [ -n "$OB_API_SERVICE_NAME" ] && [ "$WEB_UPSTREAM_HOST" = "$OB_API_SERVICE_NAME" ] \
+        || err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, whose host is ${WEB_UPSTREAM_HOST}; the upstream must address the API Service ${OB_API_SERVICE_NAME}"
+
+      # The port of the upstream must be the port that Service declares.
+      #
+      # The extraction is ANCHORED on purpose: the address is `host:port`
+      # and nothing else, so the whole address has to match for a port to be
+      # extracted. The previous expression (`s#^https?://[^:/]+:([0-9]+).*$#\1#`)
+      # left the WHOLE URL in place when the address carried no port, so the
+      # "carries no port" branch below could never trigger and the message
+      # named the URL as the port ("whose port is http://opsbridge-api").
+      # `sed -n ... p` prints nothing when the pattern does not match, which
+      # is what makes the missing port detectable.
+      WEB_UPSTREAM_PORT=$(printf '%s' "$WEB_UPSTREAM" \
+        | sed -nE 's#^https?://[^:/]+:([0-9]{1,5})(/.*)?$#\1#p' || true)
+      if [ -z "$WEB_UPSTREAM_PORT" ]; then
+        err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, which carries no port; a ClusterIP only answers the ports its Service declares (Service/opsbridge-api declares port ${OB_API_SERVICE_PORT})"
+      else
+        [ "$WEB_UPSTREAM_PORT" = "$OB_API_SERVICE_PORT" ] \
+          || err "Deployment/opsbridge-web sets API_UPSTREAM to ${WEB_UPSTREAM}, whose port is ${WEB_UPSTREAM_PORT}, but Service/opsbridge-api declares port ${OB_API_SERVICE_PORT}; a ClusterIP only answers the ports its Service declares, so the container port (8080) is dropped by kube-proxy"
+      fi
+    fi
   fi
 
   if [ -n "$WEB_SERVICE" ]; then

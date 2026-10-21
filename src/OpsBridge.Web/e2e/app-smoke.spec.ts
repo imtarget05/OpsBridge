@@ -110,9 +110,19 @@ test('operator reaches all eight authenticated screens and each one renders live
   expect(invoices.length).toBeGreaterThan(0);
   expect(purchaseOrders.length).toBeGreaterThan(0);
   expect(goodsReceipts.length).toBeGreaterThan(0);
-  // The dashboard counts every invoice, the list endpoint returns at most 100
-  // of them - equal as long as the database holds fewer than 100 invoices.
-  expect(dashboardMetrics.totalInvoices).toBe(invoices.length);
+  // The dashboard counts EVERY invoice in the database, while the list
+  // endpoint returns at most ONE PAGE of them (100 - see
+  // ReconciliationEndpoints.cs, `invoiceRepo.ListAsync(100, ct)`). The two
+  // are therefore equal only on a database that holds fewer than 100
+  // invoices - which is exactly the "the CI job starts from an empty
+  // database" accident a suite must not depend on: on any database that has
+  // been used before, this assertion failed and the suite stopped being a
+  // gate.
+  //
+  // What must hold on EVERY database: the dashboard's total is at least the
+  // size of the page the API returned (the page is a subset of the total),
+  // and the invoice this run seeded is in that page (asserted above).
+  expect(dashboardMetrics.totalInvoices).toBeGreaterThanOrEqual(invoices.length);
 
   for (const screen of SCREENS) {
     await page.getByRole('link', { name: screen.link, exact: true }).click();
