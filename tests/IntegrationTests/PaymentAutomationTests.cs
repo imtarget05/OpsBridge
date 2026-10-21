@@ -45,13 +45,6 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
             .Select(p => p.AvailableStock).FirstAsync();
     }
 
-    private static List<DomainEvent> Capture(InMemoryDomainEventPublisher publisher)
-    {
-        var captured = new List<DomainEvent>();
-        publisher.AddHandler((e, _) => { captured.Add(e); return Task.CompletedTask; });
-        return captured;
-    }
-
     [Fact]
     public async Task Persist_WithPaymentWindow_CreatesPendingPaymentOrder()
     {
@@ -90,19 +83,9 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
             await gateway.TryReserveAsync(productId, 1, "timeout-1"));
         Assert.Equal(initial - 1, await gateway.GetCachedStockAsync(productId));
 
-        var publisher = new InMemoryDomainEventPublisher();
-        var captured = Capture(publisher);
-
         await using (var db = fx.CreateDbContext())
         {
-            var useCase = new PaymentAutomationUseCase(
-                new OrderReadModel(db),
-                new PaymentRepository(db),
-                gateway,
-                new AutomationRunRepository(db),
-                publisher,
-                Options(grace: 0), // past due+grace => Cancel decision
-                NullLogger<PaymentAutomationUseCase>.Instance);
+            var useCase = fx.CreatePaymentAutomationUseCase(db, gateway, Options(grace: 0));
 
             var result = await useCase.ExecuteAsync("manual", CancellationToken.None);
 
@@ -132,9 +115,24 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
 
         Assert.Equal(initial, await gateway.GetCachedStockAsync(productId)); // cache mirrored
 
-        Assert.Contains(captured, e => e.EventType == "payment.expired");
-        Assert.Contains(captured, e => e.EventType == "order.cancelled");
-        Assert.Contains(captured, e => e.EventType == "inventory.released");
+        // ADR-019: the three events are NOT published directly any more — they
+        // are written to the transactional outbox in the same transaction as
+        // the cancellation.
+        await using (var outboxDb = fx.CreateDbContext())
+        {
+            var outboxTypes = await outboxDb.OutboxMessages.Select(m => m.EventType).ToListAsync();
+            Assert.Contains("payment.expired", outboxTypes);
+            Assert.Contains("order.cancelled", outboxTypes);
+            Assert.Contains("inventory.released", outboxTypes);
+            // Exactly ONE event of each kind — the scan must not double-publish.
+            Assert.Equal(3, await outboxDb.OutboxMessages.CountAsync(m =>
+                m.EventType == "payment.expired"
+                || m.EventType == "order.cancelled"
+                || m.EventType == "inventory.released"));
+            // Plus the order.created event the order processor wrote.
+            Assert.Equal(4, await outboxDb.OutboxMessages.CountAsync());
+            Assert.Contains("order.created", outboxTypes);
+        }
     }
 
     [Fact]
@@ -146,12 +144,7 @@ public sealed class PaymentAutomationTests(FlashSaleFixture fx)
         var orderId = await CreatePendingOrderAsync(productId, "timeout-idem");
 
         await using var db = fx.CreateDbContext();
-        var publisher = new InMemoryDomainEventPublisher();
-        var useCase = new PaymentAutomationUseCase(
-            new OrderReadModel(db), new PaymentRepository(db),
-            gateway,
-            new AutomationRunRepository(db), publisher,
-            Options(grace: 0), NullLogger<PaymentAutomationUseCase>.Instance);
+        var useCase = fx.CreatePaymentAutomationUseCase(db, gateway, Options(grace: 0));
 
         var first = await useCase.ExecuteAsync("manual", CancellationToken.None);
         var stockAfterFirst = await CurrentStockAsync(productId);

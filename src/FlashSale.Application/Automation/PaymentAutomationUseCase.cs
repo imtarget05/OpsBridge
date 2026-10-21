@@ -1,5 +1,5 @@
-using FlashSale.Application.Events;
 using FlashSale.Application.Inventory;
+using FlashSale.Application.Outbox;
 using FlashSale.Application.Persistence;
 using FlashSale.Domain.Automation;
 using FlashSale.Domain.Events;
@@ -16,13 +16,24 @@ public sealed record PaymentScanResult(int Scanned, int Reminded, int Cancelled)
 /// inventory (DB transactional, Redis best-effort) and publish payment.expired /
 /// order.cancelled / inventory.released. Every scan writes exactly one
 /// AutomationRun audit row (spec §11), success or failure.
+///
+/// <para>
+/// ADR-019: the cancellation and its three events are written in ONE
+/// transaction. Before this change the scan published straight to the broker
+/// in a swallowed <c>try/catch</c> — a dual-write: the order could be
+/// cancelled with no event, or the event could claim a cancellation that was
+/// rolled back. Now the events go through the transactional outbox, so they
+/// are published by the dispatcher, retried on failure, and deduped by the
+/// consumer on the stable <c>event_id</c>.
+/// </para>
 /// </summary>
 public sealed class PaymentAutomationUseCase(
     IOrderReadModel readModel,
     IPaymentRepository payments,
     IStockReservationGateway reservationGateway,
     IAutomationRunRepository runs,
-    IDomainEventPublisher publisher,
+    IWriteTransaction transaction,
+    OutboxEventWriter outboxWriter,
     PaymentAutomationOptions options,
     ILogger<PaymentAutomationUseCase> logger)
 {
@@ -78,22 +89,8 @@ public sealed class PaymentAutomationUseCase(
                         break;
 
                     case PaymentTimeoutRule.Decision.Cancel:
-                        if (await payments.CancelAndReleaseStockAsync(order.OrderId, ct))
+                        if (await CancelWithEventsAsync(order, run, ct))
                         {
-                            await reservationGateway.ReleaseReservationAsync(
-                                order.ProductId, order.Quantity, order.IdempotencyKey);
-
-                            var cid = run.CorrelationId;
-                            await PublishSafeAsync(new PaymentExpiredEvent(
-                                Guid.NewGuid().ToString("N"), cid, "automation/payment-timeout",
-                                DateTimeOffset.UtcNow, order.OrderId, options.TimeoutMinutes), ct);
-                            await PublishSafeAsync(new OrderCancelledEvent(
-                                Guid.NewGuid().ToString("N"), cid, "automation/payment-timeout",
-                                DateTimeOffset.UtcNow, order.OrderId, "payment_timeout"), ct);
-                            await PublishSafeAsync(new InventoryReleasedEvent(
-                                Guid.NewGuid().ToString("N"), cid, "automation/payment-timeout",
-                                DateTimeOffset.UtcNow, order.OrderId, order.ProductId, order.Quantity), ct);
-
                             cancelled++;
                             logger.LogInformation(
                                 "Order {OrderId} cancelled after payment timeout — stock released (product {ProductId}, qty {Quantity}).",
@@ -109,6 +106,12 @@ public sealed class PaymentAutomationUseCase(
         }
         catch (Exception ex)
         {
+            // The cancellation and its events are rolled back together: a
+            // cancelled order with no event (or an event for a cancellation that
+            // never happened) is exactly the inconsistency the outbox exists to
+            // remove.
+            await transaction.RollbackAsync(ct);
+
             run.Status = AutomationRunStatus.Failed;
             run.FinishedAt = DateTimeOffset.UtcNow;
             run.ErrorCode = ex.GetType().Name;
@@ -121,21 +124,69 @@ public sealed class PaymentAutomationUseCase(
     }
 
     /// <summary>
-    /// Events are best-effort (at-most-once): an event-bus outage must never
-    /// roll back a committed cancellation — the order row + audit record ARE
-    /// the source of truth. Outbox-style redelivery is a documented limitation.
+    /// Cancel one order and write its three events in ONE transaction
+    /// (ADR-019). Returns false when the guarded UPDATE matched no row — the
+    /// order was already settled by someone else, so there is nothing to
+    /// cancel and nothing to publish.
     /// </summary>
-    private async Task PublishSafeAsync(DomainEvent domainEvent, CancellationToken ct)
+    private async Task<bool> CancelWithEventsAsync(
+        PendingPaymentView order,
+        AutomationRun run,
+        CancellationToken ct)
     {
+        await transaction.BeginAsync(ct);
+
+        if (!await payments.CancelAndReleaseStockAsync(order.OrderId, ct))
+        {
+            // No transition (the status guard rejected it): nothing was
+            // written, so there is nothing to publish.
+            await transaction.CommitAsync(ct);
+            return false;
+        }
+
+        var cid = run.CorrelationId;
+        await outboxWriter.EnqueueAsync(
+            new PaymentExpiredEvent(
+                Guid.NewGuid().ToString("D"), cid, "automation/payment-timeout",
+                DateTimeOffset.UtcNow, order.OrderId, options.TimeoutMinutes),
+            OutboxEventWriter.OrderAggregate,
+            order.OrderId.ToString(),
+            ct);
+        await outboxWriter.EnqueueAsync(
+            new OrderCancelledEvent(
+                Guid.NewGuid().ToString("D"), cid, "automation/payment-timeout",
+                DateTimeOffset.UtcNow, order.OrderId, "payment_timeout"),
+            OutboxEventWriter.OrderAggregate,
+            order.OrderId.ToString(),
+            ct);
+        await outboxWriter.EnqueueAsync(
+            new InventoryReleasedEvent(
+                Guid.NewGuid().ToString("D"), cid, "automation/payment-timeout",
+                DateTimeOffset.UtcNow, order.OrderId, order.ProductId, order.Quantity),
+            OutboxEventWriter.OrderAggregate,
+            order.OrderId.ToString(),
+            ct);
+
+        // The cancellation and its events become visible together.
+        await transaction.CommitAsync(ct);
+
+        // The Redis reservation tier is a cache, not the truth: it is released
+        // AFTER the commit, so a cache failure can never undo the committed
+        // cancellation (which would be the worse inconsistency). A failure here
+        // is logged and the scan continues — the DB already holds the truth.
         try
         {
-            await publisher.PublishAsync(domainEvent, ct);
+            await reservationGateway.ReleaseReservationAsync(
+                order.ProductId, order.Quantity, order.IdempotencyKey);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex,
-                "Event publish failed for {EventType} {EventId} (best-effort, audit row still written).",
-                domainEvent.EventType, domainEvent.EventId);
+                "Redis reservation release failed for order {OrderId} (product {ProductId}); " +
+                "the cancellation and its events are committed.",
+                order.OrderId, order.ProductId);
         }
+
+        return true;
     }
 }

@@ -24,6 +24,9 @@ public sealed class OutboxEventWriter(IOutboxRepository outboxRepository)
     /// <summary>Aggregate type of a checkout saga.</summary>
     public const string SagaAggregate = "checkout-saga";
 
+    /// <summary>Aggregate type of an inventory/stock alert.</summary>
+    public const string InventoryAggregate = "inventory";
+
     /// <summary>
     /// Enqueue an event. MUST be called inside the business write
     /// transaction — otherwise the row commits on its own and the dual-write

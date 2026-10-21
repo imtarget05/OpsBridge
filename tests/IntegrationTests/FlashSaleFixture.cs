@@ -1,4 +1,5 @@
 using FlashSale.Application.Automation;
+using FlashSale.Application.Inventory;
 using FlashSale.Application.Messaging;
 using FlashSale.Application.Outbox;
 using FlashSale.Application.Orders;
@@ -97,6 +98,40 @@ public sealed class FlashSaleFixture : IAsyncLifetime
             new EfWriteTransaction(db),
             new OutboxEventWriter(new OutboxRepository(db)),
             NullLogger<RecordPaymentUseCase>.Instance);
+
+    /// <summary>
+    /// The payment-timeout scan wired to the REAL outbox (ADR-019): the
+    /// cancellation and its payment.expired / order.cancelled /
+    /// inventory.released events are written in one transaction.
+    /// </summary>
+    public PaymentAutomationUseCase CreatePaymentAutomationUseCase(
+        AppDbContext db,
+        IStockReservationGateway gateway,
+        PaymentAutomationOptions options) =>
+        new(
+            new OrderReadModel(db),
+            new PaymentRepository(db),
+            gateway,
+            new AutomationRunRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            options,
+            NullLogger<PaymentAutomationUseCase>.Instance);
+
+    /// <summary>
+    /// The low-stock scan wired to the REAL outbox (ADR-019): the alert row and
+    /// its inventory.low_stock event are written in one transaction.
+    /// </summary>
+    public LowStockAlertUseCase CreateLowStockAlertUseCase(
+        AppDbContext db,
+        InventoryAutomationOptions options) =>
+        new(
+            new StockAlertRepository(db),
+            new AutomationRunRepository(db),
+            new EfWriteTransaction(db),
+            new OutboxEventWriter(new OutboxRepository(db)),
+            options,
+            NullLogger<LowStockAlertUseCase>.Instance);
 
     public Task<RabbitMQOrderQueue> CreateRabbitQueueAsync(string queueName = "orders-test") =>
         RabbitMQOrderQueue.CreateAsync(RabbitMqConnectionString, queueName, NullLogger<RabbitMQOrderQueue>.Instance);

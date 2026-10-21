@@ -29,6 +29,21 @@ public sealed class StockAlertRepository(AppDbContext db) : IStockAlertRepositor
         if (alreadyOpen) return null;
 
         db.StockAlerts.Add(alert);
+
+        // ADR-019: the alert and its inventory.low_stock event are written in
+        // ONE transaction. Inside a transaction, a unique-index violation
+        // ABORTS it in PostgreSQL — every following statement fails with
+        // "current transaction is aborted" until the transaction ends. A
+        // savepoint makes the dedup race survivable: rolling back to it
+        // restores the transaction, so the scan can carry on and still commit
+        // the events of the products it did alert on.
+        var transaction = db.Database.CurrentTransaction;
+        var hasSavepoint = transaction is not null;
+        if (transaction is not null)
+        {
+            await transaction.CreateSavepointAsync("stock_alert_dedupe", ct);
+        }
+
         try
         {
             await db.SaveChangesAsync(ct);
@@ -37,6 +52,11 @@ public sealed class StockAlertRepository(AppDbContext db) : IStockAlertRepositor
         catch (DbUpdateException)
         {
             // Partial unique index rejected a concurrent insert — deduped, not fatal.
+            if (hasSavepoint)
+            {
+                await transaction!.RollbackToSavepointAsync("stock_alert_dedupe", ct);
+            }
+
             db.Entry(alert).State = EntityState.Detached;
             return null;
         }

@@ -1,11 +1,7 @@
 using FlashSale.Application.Automation;
 using FlashSale.Domain.Automation;
-using FlashSale.Domain.Events;
 using FlashSale.Domain.Inventory;
-using FlashSale.Infrastructure.Events;
-using FlashSale.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FlashSale.IntegrationTests;
 
@@ -34,14 +30,8 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         var productId = await fx.ResetDatabaseAsync(stock: 10);
         await SetStockAsync(fx, productId, stock: 5); // == threshold(5) => LOW (inclusive)
 
-        var publisher = new InMemoryDomainEventPublisher();
-        var captured = new List<DomainEvent>();
-        publisher.AddHandler((e, _) => { captured.Add(e); return Task.CompletedTask; });
-
         await using var db = fx.CreateDbContext();
-        var useCase = new LowStockAlertUseCase(
-            new StockAlertRepository(db), new AutomationRunRepository(db), publisher,
-            Options(), NullLogger<LowStockAlertUseCase>.Instance);
+        var useCase = fx.CreateLowStockAlertUseCase(db, Options());
 
         var result = await useCase.ExecuteAsync("manual", CancellationToken.None);
 
@@ -54,7 +44,13 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         Assert.Equal(5, alert.AvailableStock);
         Assert.Equal(5, alert.ReorderThreshold);
 
-        Assert.Contains(captured, e => e.EventType == "inventory.low_stock");
+        // ADR-019: the event is NOT published directly any more — it is written
+        // to the transactional outbox in the same transaction as the alert row.
+        var outboxTypes = await db.OutboxMessages.Select(m => m.EventType).ToListAsync();
+        Assert.Contains("inventory.low_stock", outboxTypes);
+        var outboxRow = await db.OutboxMessages.SingleAsync(m => m.EventType == "inventory.low_stock");
+        Assert.Equal("inventory", outboxRow.AggregateType);
+        Assert.Equal(productId.ToString(), outboxRow.AggregateId);
 
         var run = await db.AutomationRuns
             .Where(r => r.WorkflowName == AutomationWorkflow.InventoryAutomation.ToString())
@@ -70,10 +66,7 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         await SetStockAsync(fx, productId, stock: 3);
 
         await using var db = fx.CreateDbContext();
-        var publisher = new InMemoryDomainEventPublisher();
-        var useCase = new LowStockAlertUseCase(
-            new StockAlertRepository(db), new AutomationRunRepository(db), publisher,
-            Options(), NullLogger<LowStockAlertUseCase>.Instance);
+        var useCase = fx.CreateLowStockAlertUseCase(db, Options());
 
         var first = await useCase.ExecuteAsync("manual", CancellationToken.None);
         var second = await useCase.ExecuteAsync("timer", CancellationToken.None);
@@ -83,6 +76,10 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         Assert.Equal(0, second.AlertsCreated); // deduped: one Open alert per product
 
         Assert.Equal(1, await db.StockAlerts.CountAsync(a => a.ProductId == productId));
+
+        // ADR-019: exactly ONE event — the deduped second scan publishes
+        // nothing, because no alert was created.
+        Assert.Equal(1, await db.OutboxMessages.CountAsync(m => m.EventType == "inventory.low_stock"));
     }
 
     [Fact]
@@ -92,15 +89,14 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         await SetStockAsync(fx, productId, stock: 6);           // one above threshold
 
         await using var db = fx.CreateDbContext();
-        var useCase = new LowStockAlertUseCase(
-            new StockAlertRepository(db), new AutomationRunRepository(db),
-            new InMemoryDomainEventPublisher(), Options(), NullLogger<LowStockAlertUseCase>.Instance);
+        var useCase = fx.CreateLowStockAlertUseCase(db, Options());
 
         var result = await useCase.ExecuteAsync("manual", CancellationToken.None);
 
         Assert.Equal(0, result.Scanned);
         Assert.Equal(0, result.AlertsCreated);
         Assert.Equal(0, await db.StockAlerts.CountAsync());
+        Assert.Equal(0, await db.OutboxMessages.CountAsync());
     }
 
     [Fact]
@@ -111,10 +107,7 @@ public sealed class LowStockAutomationTests(FlashSaleFixture fx)
         await SetStockAsync(fx, productId, stock: 8, threshold: 8);
 
         await using var db = fx.CreateDbContext();
-        var useCase = new LowStockAlertUseCase(
-            new StockAlertRepository(db), new AutomationRunRepository(db),
-            new InMemoryDomainEventPublisher(), Options(defaultThreshold: 5),
-            NullLogger<LowStockAlertUseCase>.Instance);
+        var useCase = fx.CreateLowStockAlertUseCase(db, Options(defaultThreshold: 5));
 
         var result = await useCase.ExecuteAsync("manual", CancellationToken.None);
 
