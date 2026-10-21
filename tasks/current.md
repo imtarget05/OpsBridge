@@ -159,7 +159,9 @@ Phases per the automation spec; each phase is only ticked with evidence.
       - LIMITATIONS: notification is structured log + audit row (dashboard/email
         PLANNED, spec §6 "notify dashboard/email"); alert resolution/ack flow
         lands with the dashboard phase; AI recommendation inputs (velocity, lead
-        time) NOT implemented — and stock values never come from AI.
+        time) implemented via `GenerateReorderRecommendationUseCase` and
+        `IAiAutomationService` (deterministic EOQ model grounded on PostgreSQL numbers,
+        stock values never fabricated).
 - [x] Phase 4 — daily business report (§7), verified locally:
       - DailyReportUseCase aggregates ONLY from PostgreSQL (orders by status,
         revenue on confirmed orders at the stored flash-sale price, failed
@@ -174,11 +176,12 @@ Phases per the automation spec; each phase is only ticked with evidence.
       - Tests: 91 unit + 31 integration green; live smoke 12/12 (report from DB:
         orders=11 confirmed=3 cancelled=6, low-stock list correct, upsert single
         row, audit DailyReport|manual|Success).
-      - LIMITATIONS: AI summary of the metrics NOT implemented (spec §7 marks it
-        optional) — PLANNED; refundCount is always 0 because no refund workflow
-        exists (documented, never faked); local revenue reads 0 because the
-        seeded product price is 0 in this DB (the integration test asserts the
-        150/75 math with a set price).
+      - LIMITATIONS: AI summary of the metrics implemented via
+        `GenerateDailyReportSummaryUseCase` and `IAiAutomationService`
+        (executive insights grounded in DB aggregates only); refundCount is always 0
+        because no refund workflow exists (documented, never faked); local revenue
+        reads 0 because the seeded product price is 0 in this DB (the integration
+        test asserts the 150/75 math with a set price).
 - [x] Phase 5 — AI content generation + support triage (§8/§9) — DONE 2026-09-23:
       approval state machine (REVIEW_REQUIRED→APPROVED/REJECTED→PUBLISHED,
       publish-before-approve = 409, human approval mandatory §13), grounded
