@@ -176,8 +176,9 @@ saga). Recorded in [ADR-019](../adr/019-transactional-outbox.md).
 
 ### The gap is closed for the business write path
 
-(The two automation scans listed under "Still open" below are still direct
-publishers.)
+(The two automation scans listed under "Still open" below were still direct
+publishers at this point; they were converted on 2026-10-21 — see the update
+under "Still open" below.)
 
 | producer (before) | now |
 |---|---|
@@ -224,6 +225,10 @@ for the table.
   the order/payment/saga write paths, and their events are informational
   rather than a business fact a consumer acts on. Converting them is the same
   change and is the obvious follow-up.
+  **UPDATE (2026-10-21, branch `recovery/g2-20261020`): DONE.** Both scans now
+  write their events inside the transaction that changes the state, so the
+  swallowed publish is gone and `IDomainEventPublisher` is used by the
+  dispatcher only. See ADR-019 §8.
 
 * The **side observation** in §5 (saga events arriving without a handler) is fixed as
   a side effect: the consumer now knows `checkout.saga.started` / `.completed` /

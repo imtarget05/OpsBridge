@@ -174,6 +174,15 @@ Following the existing `flashsale.*` meter pattern (`WorkerTelemetry`):
 A dead-lettered row is also logged at **error** level by the dispatcher and by
 the hosted service — a poison message is never silent.
 
+**Exported, not just declared.** The instruments above live on the
+`FlashSale.Worker` meter. A `MeterProvider` only observes the meters it was
+told about, so the meter is registered explicitly in the worker's
+`WithMetrics()` block and in the API's, and the API's `MeterListener`
+aggregates it — otherwise the six series would exist as C# fields and appear
+in no scrape. `GET /metrics` (Prometheus) and `GET /internal/metrics` (JSON,
+staff) both carry them; `pending` and `stuck` are exported as **gauges**
+(they are levels), the rest as **counters** (they are totals).
+
 ### 6. Crash-window matrix (the acceptance criterion)
 
 Verified by `tests/IntegrationTests/OutboxCrashWindowTests.cs` against a real
@@ -207,20 +216,53 @@ model and the migrations, and the whole chain is applied from zero on a
 disposable database in the integration fixture. No production database is
 stamped or edited by hand.
 
-### 8. Not covered by this decision
+### 8. Scope of this decision, and what is still open
 
-Two **automation scan** use cases still publish directly and are therefore
-still dual-write:
+#### Closed since the decision (2026-10-21, branch `recovery/g2-20261020`)
 
-* `PaymentAutomationUseCase` — `payment.expired`, `order.cancelled`,
-  `inventory.released` (the abandoned-payment scan);
-* `LowStockAlertUseCase` — `inventory.low_stock` (the low-stock scan).
+* **The two remaining automation scans are now on the outbox.** They were the
+  last dual-write paths: `PaymentAutomationUseCase` published
+  `payment.expired` / `order.cancelled` / `inventory.released` and
+  `LowStockAlertUseCase` published `inventory.low_stock` straight to the
+  broker in a swallowed `try/catch`. Both now write their events inside the
+  transaction that changes the state
+  (`PaymentAutomationUseCase.cs`, `LowStockAlertUseCase.cs`), so the swallowed
+  publish is gone. `IDomainEventPublisher` is now used by the **dispatcher
+  only**. The low-stock dedup insert runs under a SAVEPOINT, because a
+  unique-index violation inside a PostgreSQL transaction aborts it.
+* **The outbox metrics are exported.** The six `flashsale.worker.outbox.*`
+  instruments were declared in `WorkerTelemetry` but no meter was ever
+  registered with a `MeterProvider`, so nothing could observe them: the
+  scrape showed `flashsale.http.*` only. The worker now registers
+  `FlashSale.Worker` (`AddMeter`), the API registers it too and aggregates it
+  in `/internal/metrics` and `/metrics`. A counter is reported as the sum of
+  its observations and a gauge as its current level.
+* **`POST /api/outbox/enqueue` answers 409 on a duplicate `MessageId`.** The
+  unique index (`IX_OutboxMessages_MessageId`) protects the consumer's dedup
+  key; the violation is translated into a domain condition at the repository
+  boundary instead of escaping as an unhandled `23505` and a 500.
 
-They are outside the scope of this decision (the write paths it names are the
-order/payment/saga paths), and their events are informational rather than a
-business fact a consumer acts on. They are listed here so the remaining gap is
-explicit rather than forgotten: converting them is the same three-line change
-(transaction scope + outbox writer) and is the obvious follow-up.
+#### Still open (explicitly not covered by this decision)
+
+* **A real payment provider.** `Payment.Service` is a local HTTP provider with
+  a durable idempotency ledger, not a PSP. The saga talking to it proves the
+  wiring, not a real money path.
+* **Kafka is experimental.** The Kafka arm of the publisher/consumer exists
+  and is not exercised by the production-fidelity stack, which runs RabbitMQ
+  (`Messaging__Provider=RabbitMQ`). The Kafka path is a code path, not a
+  verified one.
+* **The Kubernetes overlay is not verified here.** This decision was verified
+  on the branch's own `docker-compose.yml`. The k8s manifests (base + the
+  pinned prod overlay) are not part of that evidence.
+* **Load tests are not part of this decision.** The outbox is polled every
+  2 s by design; its behaviour under a flash-sale burst (thousands of rows,
+  one dispatcher vs. several) is unmeasured.
+* **The production database shape is unproven.** The migrations are applied
+  from zero on a disposable database and verified drift-free against the
+  model; the shape of a real production database (volume, indexes, vacuum,
+  partitioning of `OutboxMessages`) is not decided here — and retention /
+  archival of `OutboxMessages` is still missing.
+
 
 ### 9. Operating the outbox
 
