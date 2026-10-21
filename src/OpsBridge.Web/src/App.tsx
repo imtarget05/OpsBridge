@@ -4,6 +4,7 @@ import { AuthProvider } from './features/auth/AuthContext';
 import { ProtectedRoute } from './features/auth/ProtectedRoute';
 import { LoginPage } from './features/auth/LoginPage';
 import { AppLayout } from './components/layout/AppLayout';
+import { ErrorBoundary } from './components/ui/ErrorBoundary';
 
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { PurchaseOrdersPage } from './features/purchase-orders/PurchaseOrdersPage';
@@ -26,38 +27,40 @@ const queryClient = new QueryClient({
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Public Auth Route */}
-            <Route path="/login" element={<LoginPage />} />
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Public Auth Route */}
+              <Route path="/login" element={<LoginPage />} />
 
-            {/* Protected Enterprise Routes */}
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <AppLayout />
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route path="dashboard" element={<DashboardPage />} />
-              <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
-              <Route path="goods-receipts" element={<GoodsReceiptsPage />} />
-              <Route path="invoices" element={<InvoicesPage />} />
-              <Route path="reconciliation" element={<MatchingWorkspacePage />} />
-              <Route path="discrepancies" element={<DiscrepanciesPage />} />
-              <Route path="integrations" element={<IntegrationOpsPage />} />
-              <Route path="audit" element={<AuditTimelinePage />} />
-            </Route>
+              {/* Protected Enterprise Routes */}
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <AppLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="dashboard" element={<DashboardPage />} />
+                <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
+                <Route path="goods-receipts" element={<GoodsReceiptsPage />} />
+                <Route path="invoices" element={<InvoicesPage />} />
+                <Route path="reconciliation" element={<MatchingWorkspacePage />} />
+                <Route path="discrepancies" element={<DiscrepanciesPage />} />
+                <Route path="integrations" element={<IntegrationOpsPage />} />
+                <Route path="audit" element={<AuditTimelinePage />} />
+              </Route>
 
-            {/* Fallback */}
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
-    </QueryClientProvider>
+              {/* Fallback */}
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

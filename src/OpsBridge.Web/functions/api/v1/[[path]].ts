@@ -559,6 +559,48 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     );
   }
 
+  // Google OAuth Exchange
+  if (subPath === "/auth/google" && context.request.method === "POST") {
+    let reqBody: any = {};
+    try { reqBody = await context.request.json(); } catch {}
+    const credential = reqBody.credential;
+    let payload: any = {};
+    if (credential) {
+      try {
+        const base64Url = credential.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+          atob(base64)
+            .split('')
+            .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join('')
+        );
+        payload = JSON.parse(jsonPayload);
+      } catch {
+        payload = { email: "operator@gmail.com", name: "Google Operator", sub: "google-user-01" };
+      }
+    }
+
+    const username = payload.name || (payload.email ? payload.email.split('@')[0] : "google_user");
+    const user = {
+      id: "usr-google-" + (payload.sub || Date.now()),
+      username,
+      role: "FinanceReviewer",
+      email: payload.email || `${username}@gmail.com`,
+      picture: payload.picture,
+    };
+
+    return new Response(
+      JSON.stringify({
+        accessToken: "ey-opsbridge-google-jwt-" + btoa(JSON.stringify({ sub: username, email: user.email, role: user.role })),
+        tokenType: "Bearer",
+        expiresIn: 86400,
+        user,
+      }),
+      { headers: jsonHeaders }
+    );
+  }
+
   if (subPath === "/auth/me") {
     return new Response(
       JSON.stringify({
@@ -731,45 +773,68 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     const targetInv = invoices.find(i => i.id === invoiceId) || invoices[0];
     const isMatched = targetInv.id === "inv-8801" || targetInv.id === "inv-8802" || targetInv.id === "inv-8805";
 
+    const reconId = "recon-" + Date.now();
+    const orderedQty = 100;
+    const receivedQty = isMatched ? 100 : 80;
+    const invoicedQty = 100;
+    const unitPrice = targetInv.lines[0]?.unitPrice || 150000;
+    const totalVariance = isMatched ? 0 : (targetInv.totalAmount * 0.2);
+
     const reconResult = {
-      id: "recon-" + Date.now(),
+      id: reconId,
       batchId: "batch-live-01",
       purchaseOrderNumber: targetInv.purchaseOrderNumber,
       invoiceNumber: targetInv.invoiceNumber,
       status: isMatched ? "Matched" : "Discrepancy",
+      totalQuantityOrdered: orderedQty,
+      totalQuantityReceived: receivedQty,
+      totalQuantityInvoiced: invoicedQty,
+      totalAmountVariance: totalVariance,
+      createdAt: new Date().toISOString(),
       reconciledAt: new Date().toISOString(),
       reconciledBy: "alice_finance",
       totalInvoicedAmount: targetInv.totalAmount,
       totalMatchedAmount: isMatched ? targetInv.totalAmount : targetInv.totalAmount * 0.8,
-      totalVarianceAmount: isMatched ? 0 : targetInv.totalAmount * 0.2,
+      totalVarianceAmount: totalVariance,
       variancePercentage: isMatched ? 0.0 : 20.0,
       lines: [
         {
           id: "recon-line-01",
           lineNumber: 1,
           itemSku: targetInv.lines[0]?.itemSku || "SKU-DEFAULT",
-          orderedQuantity: 100,
-          receivedQuantity: isMatched ? 100 : 80,
-          invoicedQuantity: 100,
-          matchedQuantity: isMatched ? 100 : 80,
-          orderedUnitPrice: 150000,
-          invoicedUnitPrice: 150000,
+          orderedQuantity: orderedQty,
+          receivedQuantity: receivedQty,
+          invoicedQuantity: invoicedQty,
+          matchedQuantity: receivedQty,
+          orderedUnitPrice: unitPrice,
+          invoicedUnitPrice: unitPrice,
           status: isMatched ? "Matched" : "Discrepancy",
           discrepancyType: isMatched ? undefined : "QuantityMismatch",
         }
       ],
+      allocations: [
+        {
+          id: "alloc-" + Date.now() + "-1",
+          reconciliationResultId: reconId,
+          goodsReceiptLineId: "grl-" + (isMatched ? "1001" : "1003"),
+          supplierInvoiceLineId: targetInv.lines[0]?.id || "invl-01",
+          allocatedQuantity: receivedQty,
+          unitPrice: unitPrice,
+          allocatedAt: new Date().toISOString(),
+        }
+      ],
       discrepancies: isMatched ? [] : [
         {
-          id: "disc-live-01",
-          reconciliationResultId: "recon-" + Date.now(),
+          id: "disc-live-" + Date.now(),
+          reconciliationResultId: reconId,
           type: "QuantityMismatch",
           severity: "High",
           itemSku: targetInv.lines[0]?.itemSku || "SKU-DEFAULT",
-          expectedValue: "80 BAO (Thực nhận)",
-          actualValue: "100 BAO (Hóa đơn)",
-          varianceAmount: targetInv.totalAmount * 0.2,
+          expectedValue: "80 BAO (Thực nhận tại kho)",
+          actualValue: "100 BAO (Hóa đơn NCC yêu cầu)",
+          varianceAmount: totalVariance,
           status: "Open",
-          details: "Phát hiện chênh lệch 20 đơn vị giữa thực nhận tại kho và hóa đơn nhà cung cấp gửi sang.",
+          details: "Phát hiện chênh lệch 20 đơn vị hàng hóa giữa thực tế kiểm đếm nhập kho (80 bao) và hóa đơn NCC gửi sang (100 bao).",
         }
       ]
     };
@@ -778,13 +843,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   if (subPath.startsWith("/reconciliation/results/")) {
     const parts = subPath.split("/").filter(Boolean);
-    const resultId = parts[2];
+    const resultId = parts[2] || ("recon-" + Date.now());
     const mockResult = {
       id: resultId,
       batchId: "batch-20261021-01",
       purchaseOrderNumber: "PO-2026-1001",
       invoiceNumber: "INV-2026-8801",
       status: "Matched",
+      totalQuantityOrdered: 100,
+      totalQuantityReceived: 100,
+      totalQuantityInvoiced: 100,
+      totalAmountVariance: 0,
+      createdAt: new Date().toISOString(),
       reconciledAt: new Date(Date.now() - 3600000).toISOString(),
       reconciledBy: "system.reconciliation.worker",
       totalInvoicedAmount: 16500000,
@@ -792,6 +862,17 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       totalVarianceAmount: 0,
       variancePercentage: 0.0,
       lines: [],
+      allocations: [
+        {
+          id: "alloc-prev-01",
+          reconciliationResultId: resultId,
+          goodsReceiptLineId: "grl-1001",
+          supplierInvoiceLineId: "invl-1001",
+          allocatedQuantity: 100,
+          unitPrice: 150000,
+          allocatedAt: new Date().toISOString(),
+        }
+      ],
       discrepancies: []
     };
     return new Response(JSON.stringify(mockResult), { headers: jsonHeaders });
