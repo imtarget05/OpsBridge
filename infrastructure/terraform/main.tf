@@ -77,7 +77,14 @@ resource "azurerm_postgresql_flexible_server" "db" {
   administrator_login    = "psqladmin"
   administrator_password = coalesce(var.postgres_admin_password, random_password.pg.result)
   storage_mb             = 32768
-  sku_name               = "B_Standard_B1ms"
+  sku_name               = var.enable_postgres_ha ? "GP_Standard_D2s_v3" : var.postgres_sku_name
+
+  dynamic "high_availability" {
+    for_each = var.enable_postgres_ha ? [1] : []
+    content {
+      mode = "ZoneRedundant"
+    }
+  }
 
   # Phase 4 lesson: reserve headroom above the app pool (80).
   # 200 max connections leaves room for migrations, operators and the worker.
@@ -104,9 +111,9 @@ resource "azurerm_redis_cache" "reservation" {
   name                = "redis-flashsale-${random_string.suffix.result}"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  capacity            = 0
-  family              = "C"
-  sku_name            = "Basic"
+  capacity            = var.redis_sku == "Premium" ? 1 : (var.redis_sku == "Standard" ? 1 : 0)
+  family              = var.redis_sku == "Premium" ? "P" : "C"
+  sku_name            = var.redis_sku
 
   redis_configuration {
     maxmemory_policy = "noeviction" # never silently drop reservation state
