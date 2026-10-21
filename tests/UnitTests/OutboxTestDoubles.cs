@@ -50,11 +50,15 @@ internal sealed class FakeOutboxRepository : IOutboxRepository
     /// <summary>Set to make the enqueue fail (simulates a DB write error).</summary>
     public Exception? EnqueueFailure { get; set; }
 
+    /// <summary>Optional predicate to trigger conditional enqueue failures.</summary>
+    public Func<OutboxMessage, Exception?>? EnqueueFailureFactory { get; set; }
+
     public Task EnqueueAsync(OutboxMessage message, CancellationToken ct = default)
     {
-        if (EnqueueFailure is not null)
+        var ex = EnqueueFailureFactory?.Invoke(message) ?? EnqueueFailure;
+        if (ex is not null)
         {
-            return Task.FromException(EnqueueFailure);
+            return Task.FromException(ex);
         }
 
         Enqueued.Add(message);

@@ -353,6 +353,47 @@ public class FailureDrillIntegrationTests(OpsBridgeFixture fixture)
     }
 
     [Fact]
+    public async Task Retry_WhenPublishThrows_OriginalDeliveryIsNotAcked()
+    {
+        await fixture.ResetAsync();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"eventId\":\"{eventId}\",\"eventType\":\"GoodsReceiptConfirmed\",\"error\":\"FAIL_FORCED_POISON\"}}";
+
+        var services = new ServiceCollection();
+        services.AddDbContext<OpsBridgeDbContext>(opt => opt.UseNpgsql(fixture.ConnectionString));
+        services.AddScoped<IConsumerProcessingRepository, EfConsumerProcessingRepository>();
+        services.AddScoped<IGoodsReceiptRepository, EfGoodsReceiptRepository>();
+        services.AddScoped<IIngestedEventRepository, EfIngestedEventRepository>();
+        services.AddScoped<OpsBridge.Application.Common.IUnitOfWork, EfUnitOfWork>();
+        using var sp = services.BuildServiceProvider();
+
+        using var consumerHost = await GoodsReceiptConsumerHost.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<GoodsReceiptConsumerHost>.Instance);
+        await using var publisher = await RabbitMqEventPublisher.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            NullLogger<RabbitMqEventPublisher>.Instance);
+
+        Assert.True(await publisher.PublishAsync("opsbridge.events.inbound.goods-receipt", payload));
+        var original = await consumerHost.Channel.BasicGetAsync(RabbitMqTopology.InboundQueue, autoAck: false);
+        Assert.NotNull(original);
+
+        // Close channel before retry publish to simulate broker disconnect / publisher reject
+        await consumerHost.Channel.CloseAsync();
+
+        // HandleMessageAsync must fail on BasicPublishAsync and never invoke BasicAckAsync
+        await Assert.ThrowsAnyAsync<Exception>(() => consumerHost.HandleMessageAsync(new BasicDeliverEventArgs(
+            consumerTag: "test-tag",
+            deliveryTag: original.DeliveryTag,
+            redelivered: false,
+            exchange: RabbitMqTopology.Exchange,
+            routingKey: "opsbridge.events.inbound.goods-receipt",
+            properties: original.BasicProperties,
+            body: original.Body), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task FailureDrill5_PoisonMessage_RetriesAndDeadLettersWithAudit()
     {
         // DRILL 5: Message with unrecoverable failure retries and lands in DeadLetterEvents
