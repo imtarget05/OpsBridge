@@ -1,6 +1,7 @@
 using FlashSale.Application.Outbox;
 using FlashSale.Domain.Outbox;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace FlashSale.Infrastructure.Persistence;
 
@@ -15,11 +16,33 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
     /// the ambient transaction, so a rollback of the business write removes the
     /// event row as well — the dual-write gap cannot come back.
     /// </summary>
+    /// <exception cref="DuplicateOutboxMessageException">
+    /// A row with the same <see cref="OutboxMessage.MessageId"/> already
+    /// exists. The unique index (<c>IX_OutboxMessages_MessageId</c>) is what
+    /// protects the consumer's dedup key, so the violation is translated into
+    /// a domain condition here instead of escaping as an unhandled
+    /// <c>23505</c> and becoming a <c>500</c> at the edge.
+    /// </exception>
     public async Task EnqueueAsync(OutboxMessage message, CancellationToken ct = default)
     {
         db.OutboxMessages.Add(message);
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new DuplicateOutboxMessageException(message.MessageId);
+        }
     }
+
+    /// <summary>
+    /// True when the failure is PostgreSQL's unique violation (<c>23505</c>).
+    /// Only that one is translated: every other database error is a genuine
+    /// fault and must keep its stack trace.
+    /// </summary>
+    private static bool IsUniqueViolation(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
     public async Task<IReadOnlyList<OutboxMessage>> GetUnprocessedAsync(int batchSize = 50, CancellationToken ct = default)
     {

@@ -745,7 +745,25 @@ app.MapPost("/api/outbox/enqueue", async (
         CreatedAt = envelope.OccurredAt
     };
 
-    await outboxRepo.EnqueueAsync(msg, ct);
+    // A duplicate MessageId is a CONFLICT, not a server fault: the row exists
+    // already and the unique index (IX_OutboxMessages_MessageId) protects the
+    // consumer's dedup key. Left unhandled, the raw 23505 surfaced as a 500 —
+    // telling the caller "the server broke" for a request that simply collided.
+    try
+    {
+        await outboxRepo.EnqueueAsync(msg, ct);
+    }
+    catch (DuplicateOutboxMessageException ex)
+    {
+        return Results.Conflict(new
+        {
+            error = "duplicate_outbox_message_id",
+            message = "An outbox message with this MessageId already exists.",
+            messageId = ex.MessageId,
+            status = "conflict"
+        });
+    }
+
     return Results.Ok(new { status = "enqueued", messageId = msg.MessageId, id = msg.Id });
 })
 // STAFF/ADMIN: this injects arbitrary events into the bus that real consumers
