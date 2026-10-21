@@ -92,6 +92,20 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      # The worker has NO HTTP listener (Order.Worker is a BackgroundService
+      # host), so there is no port to probe - a fabricated /health endpoint
+      # would prove nothing. The probe asserts what the worker really does:
+      # it holds a live connection to the broker AND is registered there as an
+      # active consumer. Without it, `docker compose ps` says "Up", which
+      # only means the process has not exited - a worker whose AMQP
+      # connection died stays "Up" while it silently stops consuming the
+      # `orders` queue and stops dispatching the outbox.
+      test: ["CMD", "/app/opsbridge-worker-healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:

@@ -15,6 +15,11 @@ WORKDIR /app
 # output is chowned to the built-in `app` user (uid 1654) with a writable
 # logs/ dir for the file DLQ, then privileges are dropped.
 COPY --from=build /app/publish .
-RUN mkdir -p /app/logs && chown -R app:app /app
+# The container HEALTHCHECK probe. The worker has no HTTP listener, so the
+# probe asserts what the worker REALLY does: it holds a live connection to
+# the broker and is registered as an active consumer there. See the script
+# for the full rationale.
+COPY scripts/opsbridge-worker-healthcheck.sh /app/opsbridge-worker-healthcheck.sh
+RUN mkdir -p /app/logs && chmod 0755 /app/opsbridge-worker-healthcheck.sh && chown -R app:app /app
 USER app
 ENTRYPOINT ["dotnet", "Order.Worker.dll"]
