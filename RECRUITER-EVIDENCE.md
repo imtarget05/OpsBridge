@@ -1,5 +1,11 @@
 # Recruiter Evidence — OpsBridge (.NET 10 Flash-Sale + OpsBridge)
 
+> **Current checkpoint (2026-10-21):** This short form contains historical
+> counts and CI wording below. The old harness could print `RESULT: PASS` after
+> a dry-run resync with only 3/50 or 0/50 sales. The uncommitted fix now gates
+> exact 10/40 fill and passed one disposable local run; remote CI has not been
+> rerun. See [the commit-pinned audit](docs/evidence/portfolio-audit-2026-10-21.md).
+
 > **Repository note.** This file lives in `imtarget05/OpsBridge`, which currently
 > **shares its full commit history** with `imtarget05/FlashSale-Backend` — the
 > FlashSale order-reliability context and the OpsBridge event-driven operations

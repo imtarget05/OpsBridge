@@ -16,6 +16,14 @@
 > was run (below). The OpsBridge context has its own evidence files —
 > `docs/evidence/ci-verification.md`, `docs/known-issues.md`,
 > `docs/requirements/` — and its own decisions (ADR-017 to ADR-021).
+> **2026-10-21 correction:** the historical `RESULT: PASS` gate described
+> below checked inventory conservation but did not prove exact 10/40 fill.
+> Resync called the endpoint in default dry-run mode, allowing false PASS at
+> 3/47/stock 7 or 0/50/stock 10. The uncommitted harness fix now applies and
+> verifies resync, requires exact counts, and passed one disposable local
+> 10/40/stock 0 run. Use
+> [`docs/evidence/portfolio-audit-2026-10-21.md`](evidence/portfolio-audit-2026-10-21.md)
+> for current claims. Remote CI has not rerun these fixes.
 
 Every claim below was checked by opening the cited file, confirming the line number, and
 running the stated command on this machine. Where a claim could not be reproduced, it says so.

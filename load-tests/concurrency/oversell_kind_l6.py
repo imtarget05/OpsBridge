@@ -79,10 +79,19 @@ def main() -> int:
         return 2
 
     psql(f'UPDATE "Products" SET "AvailableStock" = {args.stock} WHERE "Id" = {args.product_id};')
-    urllib.request.urlopen(f"{args.base_url}/internal/resync-stock/{args.product_id}",
-                           data=b"{}",
-                           headers={"Authorization": f"Bearer {args.ops_token}"},
-                           timeout=10)
+    with urllib.request.urlopen(
+        f"{args.base_url}/internal/resync-stock/{args.product_id}?dryRun=false",
+        data=b"{}",
+        headers={"Authorization": f"Bearer {args.ops_token}"},
+        timeout=10,
+    ) as response:
+        resync = json.load(response)
+    if resync.get("postgres") != args.stock or not (
+        resync.get("fixed") is True
+        or (resync.get("fixed") is False and resync.get("redis") == args.stock)
+    ):
+        print(f"RESULT: ABORTED - Redis resync not applied: {resync}")
+        return 2
     orders_before = int(psql(f'SELECT COUNT(*) FROM "Orders" WHERE "ProductId" = {args.product_id};'))
     print(f"initial stock={args.stock} attempts={args.requests} product=#{args.product_id} "
           f"orders_before={orders_before}")

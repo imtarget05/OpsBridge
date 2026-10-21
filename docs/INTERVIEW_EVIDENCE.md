@@ -1,5 +1,13 @@
 # FlashSale-Backend — Interview Evidence Kit
 
+> **Current correction (2026-10-21):** This kit's older CI and test counts are
+> historical. The prior concurrency harness could falsely print `RESULT: PASS`
+> for 3/47/stock 7 because resync was dry-run and it checked conservation only.
+> The working-tree fix passed six verdict/resync regressions and one disposable
+> local 50/10 run (10 accepted, 40 × 409, 10 persisted, stock 0). Remote CI
+> remains unverified; see
+> [`docs/evidence/portfolio-audit-2026-10-21.md`](evidence/portfolio-audit-2026-10-21.md).
+
 > Event-driven flash-sale reliability platform (.NET 10, PG + Redis + RabbitMQ).
 > **Zero-oversell invariant CI-enforced**: 50 buyers vs stock 10 → exactly 10
 > sales, stock 0 (`RESULT: PASS` or the build fails). Unit suite **162/162**.

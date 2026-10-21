@@ -691,9 +691,10 @@ jobs:
           token=$(printf '%s' "$login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["accessToken"])')
           echo "::add-mask::$token"
           echo "OPS_TOKEN=$token" >> "$GITHUB_ENV"
-      - name: Concurrency harness — inventory must be conserved (no overselling)
+      - name: Concurrency harness — exact fill and inventory conservation
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s load-tests/concurrency -p 'test_oversell_demo.py'
           python3 load-tests/concurrency/oversell_demo.py \
             --stock 10 --requests 50 --psql-container '' --settle-seconds 3 \
             --ops-token "$OPS_TOKEN" | tee result.txt

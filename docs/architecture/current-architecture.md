@@ -1,4 +1,12 @@
-# Current Architecture (Phase 5)
+# FlashSale Phase 5 Architecture (historical baseline)
+
+This page records the Phase 5 design. The current repository also includes
+payment/Saga, transactional business outbox and a separate OpsBridge bounded
+context. Use [ADR-019](../adr/019-transactional-outbox.md),
+[ADR-017](../adr/017-opsbridge-bounded-context-foundation.md) and the
+[2026-10-21 portfolio audit](../evidence/portfolio-audit-2026-10-21.md) for
+the current claim and evidence boundaries; the diagrams and measurements below
+must not be read as a complete current topology or fresh benchmark.
 
 ## Overview
 Tiered flash-sale order path: Redis absorbs hype traffic, the queue decouples
