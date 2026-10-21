@@ -21,6 +21,24 @@ services:
       # the app refuses to start without a >= 32-byte HS256 key — so compose must
       # supply one. The default below is a LOCAL DEV key; never reuse it anywhere real.
       - Auth__Jwt__SigningKey=${JWT_SIGNING_KEY:-dev-only-insecure-local-signing-key-change-me}
+      # Payment provider (P0 fix, 2026-10-20): the container must address the
+      # sibling service by its docker-network name. HttpPaymentClient
+      # (src/FlashSale.Infrastructure/Payment/HttpPaymentClient.cs:26) falls back
+      # to "http://localhost:5002" — inside this container that is the API's OWN
+      # loopback -> connection refused -> the client silently takes the
+      # deterministic-simulator branch and returns sim_tx_... instead of a real
+      # tx_... . Override with PAYMENT_SERVICE_URL when the API runs on the host
+      # (e.g. PAYMENT_SERVICE_URL=http://localhost:5002).
+      - Payment__ServiceUrl=${PAYMENT_SERVICE_URL:-http://payment-service:8080}
+      # Messaging provider (P1 fix, 2026-10-20): set EXPLICITLY. The order queue
+      # auto-detects RabbitMQ from the connection string, but the DOMAIN EVENT
+      # publisher does NOT: DomainEventServiceCollectionExtensions.ResolveProvider
+      # reads only "Events:Provider" / "Messaging:Provider" from configuration
+      # (src/FlashSale.Infrastructure/Events/DomainEventServiceCollectionExtensions.cs:33).
+      # Unset -> InMemoryDomainEventPublisher -> no "automation.events" exchange
+      # on the broker and events die with the process.
+      - Messaging__Provider=RabbitMQ
+      - Events__Provider=RabbitMQ
     healthcheck:
       # aspnet runtime has no wget/curl and sh lacks /dev/tcp: run a tiny
       # framework-dependent probe with the SDK-free runtime (dotnet is present
@@ -60,9 +78,17 @@ services:
       dockerfile: Dockerfile.worker
     environment:
       - ConnectionStrings__DefaultConnection=Host=${POSTGRES_HOST:-postgres};Port=5432;Database=${POSTGRES_DB:-FlashSaleDb};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};Maximum Pool Size=40
+      - ConnectionStrings__Redis=${REDIS_HOST:-redis}:6379
       - ConnectionStrings__RabbitMQ=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@${RABBITMQ_HOST:-rabbitmq}:5672/
+      # Same explicit-provider rule as the API (ADR-005 / ADR-010): the worker
+      # and the API must resolve the SAME transport, and the event backbone
+      # switch is read literally, so both keys are set (P1 fix, 2026-10-20).
+      - Messaging__Provider=RabbitMQ
+      - Events__Provider=RabbitMQ
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -82,6 +108,56 @@ services:
       - default
       - portfolio-net
 
+  # Payment.Service (Phases 9/11/12) — the HTTP payment provider that
+  # FlashSale.Infrastructure/Payment/HttpPaymentClient calls (POST
+  # /api/payments, GET /api/payments/{idempotencyKey}, GET /health).
+  # Same convention as the k8s base (infrastructure/kubernetes/base/payment):
+  # container port 8080, /health probe, name payment-service.
+  #
+  # It DOES touch PostgreSQL: the idempotency ledger is durable (the primary
+  # key IS the IdempotencyKey), so a pod restart cannot mint a second
+  # transaction id for the same key. The service owns only the
+  # `payment_records` table — it never reads order tables.
+  payment-service:
+    container_name: flashsale-payment-service
+    build:
+      context: .
+      dockerfile: Dockerfile.payment
+    ports:
+      - "${PAYMENT_PORT:-5002}:8080"
+    environment:
+      # Mirrors the k8s base/payment deployment env.
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      # Same PostgreSQL instance as the order API, same database — the
+      # service namespaces its own table, not its own database. The service
+      # refuses to start without this (Payment.Service Program.cs).
+      - ConnectionStrings__PaymentDb=Host=${POSTGRES_HOST:-postgres};Port=5432;Database=${POSTGRES_DB:-FlashSaleDb};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The aspnet runtime image has no curl/wget; /bin/sh lacks /dev/tcp, so
+      # probe through bash (present in the Debian base) and assert HTTP 200.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && head -1 <&3 | grep -q \" 200 \"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - default
+      - portfolio-net
+
   postgres:
     container_name: flashsale-postgres
     image: postgres:15-alpine
@@ -91,7 +167,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-FlashSaleDb}
     ports:
-      - "5432:5432"
+      # Host port is a variable with a NON-CONFLICTING default (P2 fix,
+      # 2026-10-20): the classic 5432 is already taken by other local stacks
+      # on this machine, and a hard bind made `docker compose up` fail before
+      # a single service started. Override with POSTGRES_HOST_PORT if 55432 is
+      # taken. The CONTAINER port stays 5432 — the connection string above
+      # always talks to the service name, never to the host port.
+      - "${POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -117,7 +199,10 @@ services:
     container_name: flashsale-redis
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Same reasoning as postgres: 6379 is a classic local conflict, so the
+      # host port is a variable with a non-conflicting default (P2 fix,
+      # 2026-10-20). Override with REDIS_HOST_PORT if 56379 is taken.
+      - "${REDIS_HOST_PORT:-56379}:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

@@ -3,6 +3,16 @@ services:
     ports: !override
       - "5001:8080"
 
+  # Payment.Service: host port pinned to 5002 (localhost convention). The
+  # containerised API reaches the provider by its docker-network name
+  # (Payment__ServiceUrl=http://payment-service:8080, set in docker-compose.yml);
+  # 5002 is for an API running on the HOST, which must point
+  # Payment__ServiceUrl at http://localhost:5002 explicitly.
+  # (src/FlashSale.Infrastructure/Payment/HttpPaymentClient.cs)
+  payment-service:
+    ports: !override
+      - "5002:8080"
+
   # Localhost note (2026-09-28): RabbitMQ đánh system_memory_high_watermark
   # alarm liên tục trên Docker Desktop (BEAM+management vượt 40% của limit
   # 1G khi máy chật) → healthcheck đỏ → order-api/worker không bao giờ start.

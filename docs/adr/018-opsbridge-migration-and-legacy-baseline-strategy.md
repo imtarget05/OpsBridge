@@ -329,4 +329,165 @@ by it.
   and `OpsBridge:MigrationCommandTimeoutSeconds` (int, default `120`).
 * This ADR does not create a deployment manifest for OpsBridge. The repository has no
   Kubernetes or compose deployment tree for this context; who runs `--migrate`, with
-  which identity, in which environment is an open operational decision.
+  which identity, in which environment is an open operational decision. The operational
+  procedure that a deployment should follow is written down in
+  [Production deployment runbook](#production-deployment-runbook), so the decision is
+  "who runs it", not "how does it work".
+
+### Note on this ADR's number and filename
+
+This decision was planned as `docs/adr/013-ef-baseline-strategy.md`. Number `013` was
+already taken by [ADR-013 (auth design)](013-auth-design.md) and ADR numbers in this
+repository are a stable, non-reusable sequence, so a second ADR with number 013 would
+make the index ambiguous. The decision therefore lives in **ADR-018**, next to the
+ADR-017 bounded-context ADR it belongs to. No content was lost by the renumbering;
+the file name is the only difference from the original plan.
+
+## Rollback
+
+Two different things can be rolled back, and they have **opposite** risk profiles.
+
+### 1. Undoing a baseline (adopting a legacy database)
+
+The baseline writes **one row** into `__EFMigrationsHistory` and touches nothing else.
+Its rollback is therefore the inverse of that one write, and it is deliberately **not**
+an EF operation:
+
+```sql
+-- Undo the baseline. The 19 domain tables and all their data stay exactly as they are;
+-- the database returns to the legacy shape (schema without migration history).
+DROP TABLE "__EFMigrationsHistory";
+```
+
+Verified on a disposable database: after this statement the database had its 19 domain
+tables and its business rows, and a subsequent `--baseline-legacy` run re-adopted it
+successfully (exit 0, `HistoryWritten=True`, row counts unchanged). The baseline is
+therefore **reversible and repeatable**, not a one-way door.
+
+> **Do not use `dotnet ef database update 0` to undo a baseline.** The initial
+> migration's `Down()` drops the 19 domain tables, so EF's own rollback path destroys
+> the schema *and* the data of a database that was never migrated in the first place.
+> Measured on a disposable copy of a baseline-stamped legacy database: 20 public tables
+> (19 domain + history) before the rollback, **1** (the history table alone) after it,
+> with the business rows gone. EF rolls back *migrations*; a baseline is not a
+> migration, it is a history row, and its inverse is one `DROP TABLE`.
+
+### 2. Rolling back a migration that was applied on top of a baseline
+
+From the second migration onwards, the normal EF rule applies: a migration must be
+reversible (`Down()` must be written and tested), and the rollback is
+`dotnet ef database update <previous-migration-id>`. The rule of thumb for this
+repository: **a migration that is not reversible is a migration that requires a
+restore-from-backup plan to be written in the same pull request.**
+
+Because the OpsBridge schema is owned by a migration chain, the safe production
+rollback for a *new* migration is:
+
+1. `dotnet ef database update <previous-id>` — only if the migration's `Down()` is
+   verified and no business data is lost by it;
+2. otherwise: restore the database from the pre-deployment backup (PITR or `pg_dump`)
+   and roll back the application image to the previous build.
+
+## Production deployment runbook
+
+The decision tree is driven by **the shape the production database is in**, which is
+the first thing an operator must establish (see the open questions below). The tool
+reports the shape itself, so the check is one command:
+
+```bash
+# 0. What shape is the database in? (read-only)
+psql "$CONN" -c "select count(*) from information_schema.tables
+                 where table_schema='public' and table_name='__EFMigrationsHistory';"
+```
+
+| Observed state | Command to run | Expected result |
+|---|---|---|
+| No database / empty database | `OpsBridge.Api --migrate` | exit 0, 19 domain tables + history |
+| 19 domain tables, **no** `__EFMigrationsHistory` (legacy) | `OpsBridge.Api --baseline-legacy` | exit 0, history written, data preserved |
+| Same, **but** the schema has drifted | `OpsBridge.Api --baseline-legacy` | **exit 2**, difference printed, nothing written |
+| `__EFMigrationsHistory` present and populated | `OpsBridge.Api --migrate` | exit 0, "already at head" (nothing to do) |
+| `__EFMigrationsHistory` present but empty | `OpsBridge.Api --baseline-legacy` | exit 0, adopted (verified) |
+| History contains an id this build does not know | `OpsBridge.Api --baseline-legacy` | **exit 2**, the unknown id is named |
+
+Ordering rules for a real rollout:
+
+1. **Schema first, application second.** Run `--migrate` (or `--baseline-legacy`)
+   *before* the new application image starts serving traffic. The application is
+   expected to be compatible with both the old and the new schema for the duration of
+   the rollout, exactly as in the FlashSale context (ADR-006).
+2. **One schema step, not two.** `--baseline-legacy` and `--migrate` are mutually
+   exclusive; a legacy database is baselined *and then* migrated, in that order, in
+   two separate steps, each with its own exit code.
+3. **Identities.** The schema step needs a DDL-capable identity; the runtime identity
+   needs DML only. The baseline additionally needs **`CREATEDB`** on the target
+   server (it creates and drops a scratch database). If `CREATEDB` is refused the run
+   aborts with exit 1 and writes nothing — it never falls back to an unverified
+   baseline.
+4. **Exit codes are the contract.** `0` = success, `1` = failure, `2` = drift/unknown
+   state. A pipeline must stop on `1` and `2`, and must not retry `2` blindly — a
+   drift exit means a human has to look at the printed difference.
+5. **Never point the step at the wrong database.** The schema entrypoints refuse the
+   localhost fallback and take the connection string only from
+   `ConnectionStrings__OpsBridgeDb` (or `ConnectionStrings__DefaultConnection`).
+6. **Re-running is safe.** Both commands are idempotent: a second run of `--migrate`
+   reports "already at head" and exits 0, and a second `--baseline-legacy` verifies the
+   already-managed database and writes nothing.
+
+## Verification evidence (2026-10-20)
+
+All of the following was executed against a **disposable** PostgreSQL 16 container
+(`opsbridge-ef-verify`, port 55444), never against a real database, and the container
+and every database in it were dropped afterwards.
+
+| # | Scenario | Command | Result |
+|---|---|---|---|
+| 0 | Legacy database (19 tables from a real `EnsureCreatedAsync()`), migration applied blindly | `--migrate` | **exit 1**, `42P07: relation "AuditEvents" already exists`, 0 history rows written — this is the blocker |
+| 1 | Legacy database (19 tables, no history, 1 seeded `Connectors` row) | `--baseline-legacy` | **exit 0**, `HistoryWritten=True`, `VerificationRan=True`, `Differences=0`, 19/19 row counts unchanged, scratch database dropped |
+| 1b | Same database, after the baseline | `--migrate` | **exit 0**, `AlreadyAtHead=True` |
+| 2 | Empty database | `--migrate` | **exit 0**, 20 public tables (19 domain + history), 1 history row |
+| 3 | Database already at head | `--migrate` (re-run) | **exit 0**, `AlreadyAtHead=True`, `AppliedByThisRun=[]`, still exactly 1 history row |
+| 4 | Legacy database with one column dropped (drift) | `--baseline-legacy` | **exit 2**, `table "Connectors" is missing column "BaseUrl"`, `HistoryWritten=False` |
+| 5 | History table present but empty | `--baseline-legacy` | **exit 0**, adopted and verified |
+| 6 | Model parity | `dotnet ef migrations has-pending-model-changes` | "No changes have been made to the model since the last migration." |
+| 7 | Rollback of an applied migration | `dotnet ef database update 0` | "Reverting migration … Done." — 20 tables → 1 (history table only) |
+| 8 | Undo of a baseline (history drop) | `DROP TABLE "__EFMigrationsHistory"` → `--baseline-legacy` | 19 tables and the business row kept, re-adoption exit 0 |
+| 9 | Baseline of a *drifted* database followed by EF's own rollback | `dotnet ef database update 0` | 20 tables → 1 and the business row **destroyed** — why EF's rollback must not be used to undo a baseline |
+
+## Open questions for the owner
+
+These are not implementation details; they are decisions that need a human answer
+before the first production migration.
+
+1. **What shape is the production OpsBridge database in today?** Concretely: does it
+   exist, does it have the 19 domain tables, and does it have an
+   `__EFMigrationsHistory` table? The three answers select the command:
+   * no database → `--migrate`;
+   * schema without history → `--baseline-legacy`;
+   * schema with history → `--migrate` (probably a no-op).
+   Until this is answered, **the safe action is to run `--baseline-legacy`**: it
+   verifies the schema before it writes, and it refuses with exit 2 instead of guessing.
+2. **Is there a production OpsBridge database at all?** Neither `docker-compose.yml`
+   nor `infrastructure/kubernetes` contains an OpsBridge workload today (verified:
+   no `opsbridge` match in either tree). If OpsBridge is not deployed yet, the
+   production database does not exist, and the whole question reduces to "which
+   command does the first deployment run" — namely `--migrate` on an empty database.
+3. **Who runs the schema step, with which identity, in which environment?** There is
+   no deployment manifest for OpsBridge yet, and no Kubernetes Job analogous to the
+   FlashSale migration Job. The identity needs DDL rights plus `CREATEDB` for the
+   baseline; the runtime identity must stay DML-only. This also decides whether
+   `OpsBridge:AutoMigrate` ever needs to exist outside Development/Test — the current
+   answer is "no", because the deployment step is the supported path.
+4. **Is the runtime identity allowed to hold DDL rights at all?** The current ADR
+   answers "no" (runtime = DML only). If the operational reality is a single
+   credential for everything, that answer changes and ADR-018 has to be amended
+   before the first deployment — not after.
+5. **Is the PostgreSQL server 13 or newer?** The baseline's `DROP DATABASE … WITH
+   (FORCE)` requires it. The disposable verification used PostgreSQL 16.
+6. **What is the backup/PITR position before the first production schema change?** A
+   baseline cannot be undone with EF's own rollback (see "Rollback" above), so a
+   verified restore point is the only safety net if the production database turns out
+   to have drift.
+7. **Should a migration ever be written that is not reversible?** The current rule is
+   "reversible or restore-from-backup, decided in the same pull request". Confirm
+   that this is the standard the team wants, because it is the rule that makes
+   `dotnet ef database update <previous>` a safe production action.

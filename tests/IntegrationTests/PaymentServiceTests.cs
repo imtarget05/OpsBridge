@@ -88,6 +88,26 @@ public sealed class PaymentServiceTests : IAsyncLifetime
         Assert.Equal(
             record.GetProperty("processedAt").GetDateTimeOffset(),
             replayed.GetProperty("processedAt").GetDateTimeOffset());
+        Assert.Equal(
+            0,
+            record.GetProperty("processedAt").GetDateTimeOffset().Ticks % TimeSpan.TicksPerMicrosecond);
+    }
+
+    [Fact]
+    public async Task NewlyCreatedPayment_UsesPostgresCompatibleMicrosecondTimestamp()
+    {
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            var response = await _client.PostAsync(
+                "/api/payments",
+                Request($"timestamp-{Guid.NewGuid():N}", 10.01m));
+            var record = await BodyAsync(response);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(
+                0,
+                record.GetProperty("processedAt").GetDateTimeOffset().Ticks % TimeSpan.TicksPerMicrosecond);
+        }
     }
 
     [Fact]

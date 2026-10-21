@@ -37,6 +37,18 @@ spec:
               value: Production
             - name: ASPNETCORE_URLS
               value: http://+:8080
+            # Payment.Service uses the SAME in-cluster PostgreSQL instance as the
+            # order API, but only its own table (payment_records) — the
+            # microservice decomposition rule forbids cross-service table reads.
+            # So the connection string is the shared `pg-connection` key; the
+            # service namespaces its own rows, not its own database.
+            - name: ConnectionStrings__PaymentDb
+              valueFrom:
+                secretKeyRef:
+                  name: flashsale-secrets
+                  key: pg-connection
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.flash-sale:4317
           resources:
             requests:
               cpu: 50m
@@ -46,14 +58,14 @@ spec:
               memory: 256Mi
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5

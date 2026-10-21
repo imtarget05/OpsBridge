@@ -6,6 +6,14 @@
 - **Resolution:** [ADR-019 — Transactional Outbox for the business write path](../adr/019-transactional-outbox.md)
 - **This note keeps the original analysis.** The sections below describe the gap
   as it was found; the "What changed" section at the end says how it was closed.
+- **Merged note (2026-10-21).** The same finding was captured independently on the
+  payment-stream branch (`codex/portfolio-opsbridge`, commit `8ff3212`), where the
+  note was still in its original "OPEN — analysis only" form. Merging the payment
+  stream into `recovery/g2-20261020` produced an add/add conflict on this file; the
+  resolution keeps BOTH: the historical analysis (§1–§5, verbatim, including the
+  original "this is a decision, not an implementation task" framing and the
+  "Update (2026-10-20)" note that records the decision) AND the implemented status
+  (§6 "What changed"). The merged branch is the authoritative one.
 
 ---
 
