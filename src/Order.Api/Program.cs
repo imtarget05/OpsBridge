@@ -92,6 +92,11 @@ builder.Services.AddSingleton(reportingOptions);
 builder.Services.AddScoped<IDailyReportRepository, DailyReportRepository>();
 builder.Services.AddScoped<DailyReportUseCase>();
 
+// AI Automation capabilities: inventory reorder recommendations & executive daily report summary
+builder.Services.AddScoped<IAiAutomationService, FlashSale.Infrastructure.Services.AiAutomationService>();
+builder.Services.AddScoped<GenerateReorderRecommendationUseCase>();
+builder.Services.AddScoped<GenerateDailyReportSummaryUseCase>();
+
 
 // ---------------------------------------------------------------
 // Observability (Phase III).
@@ -607,6 +612,45 @@ app.MapGet("/internal/automation/daily-report/latest", async (
 .WithTags("Ops")
 .WithName("LatestDailyReport")
 .WithSummary("Most recent persisted daily business report.");
+
+// AI Inventory Reorder Recommendation
+app.MapPost("/internal/automation/reorder-recommendation/{productId:int}", async (
+    int productId,
+    int? leadTimeDays,
+    GenerateReorderRecommendationUseCase useCase,
+    CancellationToken ct) =>
+{
+    var result = await useCase.ExecuteAsync(productId, leadTimeDays ?? 3, ct);
+    return result is null
+        ? Results.NotFound(new { error = $"Product {productId} not found or stock is adequate" })
+        : Results.Ok(result);
+})
+.RequireAuthorization(AuthPolicies.StaffOrAdmin)
+.WithTags("Ops")
+.WithName("ReorderRecommendation")
+.WithSummary("Generate deterministic EOQ inventory reorder recommendation with AI rationale.");
+
+// AI Daily Business Report Executive Summary
+app.MapPost("/internal/automation/daily-report/ai-summary", async (
+    string? date,
+    GenerateDailyReportSummaryUseCase useCase,
+    CancellationToken ct) =>
+{
+    DateTime? day = null;
+    if (!string.IsNullOrWhiteSpace(date))
+    {
+        if (!DateTime.TryParse(date, out var parsed))
+            return Results.BadRequest(new { error = "date must be YYYY-MM-DD" });
+        day = parsed;
+    }
+
+    var summary = await useCase.ExecuteAsync(day, ct);
+    return Results.Ok(summary);
+})
+.RequireAuthorization(AuthPolicies.StaffOrAdmin)
+.WithTags("Ops")
+.WithName("DailyReportAiSummary")
+.WithSummary("Generate executive AI summary and operational health status from daily aggregates.");
 
 // The caller's own order history (ADR-013 §5). Scoped by the JWT `sub`, so a
 // caller can only ever see their own orders — no resource-based handler is

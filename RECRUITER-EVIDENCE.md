@@ -1,5 +1,11 @@
 # Recruiter Evidence — OpsBridge (.NET 10 Flash-Sale + OpsBridge)
 
+> **Current checkpoint (2026-10-21):** This short form contains historical
+> counts and CI wording below. The old harness could print `RESULT: PASS` after
+> a dry-run resync with only 3/50 or 0/50 sales. The uncommitted fix now gates
+> exact 10/40 fill and passed one disposable local run; remote CI has not been
+> rerun. See [the commit-pinned audit](docs/evidence/portfolio-audit-2026-10-21.md).
+
 > **Repository note.** This file lives in `imtarget05/OpsBridge`, which currently
 > **shares its full commit history** with `imtarget05/FlashSale-Backend` — the
 > FlashSale order-reliability context and the OpsBridge event-driven operations
@@ -38,17 +44,18 @@ Demo: `docker compose up` → `k6 run load-tests/k6/flash-sale.js` → Grafana `
 | Clean-Architecture dependency direction is an **executable** rule, not a convention | `tests/UnitTests/ArchitectureTests.cs` |
 | Local docker compose stack healthy (6 containers, 2026-10-21) | `docs/known-issues.md` |
 | Outbox/Inbox live behaviour (broker outage → DLQ → replay, 5× duplicate → 1 inbox row), saga 21/21, 3 backup/restore drills | `docs/evidence/v2/outbox-inbox-2026-09-24.md`, `docs/evidence/saga/`, `docs/evidence/backup/` |
+| Optimistic-concurrency `Version` token — concurrent updates with conflicting versions throw `DbUpdateConcurrencyException`, zero lost updates | `tests/UnitTests/CheckoutSagaConcurrencyTests.cs`, `tests/IntegrationTests/CheckoutSagaConcurrencyTests.cs` (PostgreSQL Testcontainers CI verified) |
+| Outbox orphan reservation compensation & reconciler repair | `tests/UnitTests/SubmitOrderCompensationFailureTests.cs` (`WhenQueueRejectsAndCompensationOutboxFails_RedisIsReleased_AndReconcilerCanRepair`) |
 
 **Not verified — do not claim these**:
 
 | Claim | Status |
 |---|---|
-| A real payment service provider | **Never exercised.** The local payment service is a simulation (`sim_tx_…`); no PSP contract, credential or behaviour exists in this repository. |
+| A real payment service provider | **Never exercised.** The local payment service is a deterministic simulation (`sim_tx_…`); no PSP contract, credential or external behavior exists in this repository (ADR-017). |
 | The Kubernetes `prod` overlay as a running system | **Configuration only** — never applied to a real AKS cluster (`docs/adr/020`, `docs/evidence/kubernetes/phase7c-readiness.md`). |
 | Latency numbers (p95 29 ms / 574 ms) | **Local single runs, not CI gates.** Re-measure before quoting; only the zero-oversell invariant is CI-enforced. |
 | Production database shape | **None.** The schema is verified *from empty* against local PostgreSQL — no production dataset, volume or query-plan evidence. |
-| The optimistic-concurrency `Version` token | **Declared but never exercised** by any test. |
-| Pod-level liveness/readiness for the worker | **Absent by decision** — container-level healthcheck only (`docs/known-issues.md`). |
+| Pod-level liveness/readiness for the worker | **Absent by decision** — container-level healthcheck only (`docs/known-issues.md`, `infrastructure/kubernetes/base/worker/deployment.yaml`). Worker has no inbound HTTP listener. |
 | `/api/v1/auth/login` as authentication | **A local demo persona selector**, mapped only in Development/Test; no external identity provider (ADR-017). |
 
 > This is an **index of evidence, not a production-readiness claim**. Nothing in

@@ -1,0 +1,49 @@
+Starting base HEAD: 1fd2822649d673f037372c2b34b4de38a9c31fab
+Observed final HEAD: d54eb7e150e5d0f74b54f69e122dc5c57c164ff1
+HEAD advance: an independent commit added only src/OpsBridge.Web/functions/api/v1/[[path]].ts.
+State: audit fixes remain uncommitted in the working tree; local Docker, not remote CI.
+The integration and disposable 50/10 runs below preceded the web-only HEAD advance.
+Post-advance checks at d54eb7e150e5d0f74b54f69e122dc5c57c164ff1:
+  python3 -m unittest discover -s load-tests/concurrency -p 'test_oversell_demo.py' -v
+  Ran 6 tests, OK (exit 0).
+  git diff --check: PASS (exit 0).
+Docker integration and 50/10 were not repeated after the web-only commit.
+
+Command: dotnet test tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj -c Release --no-restore --verbosity quiet
+Result: Passed! - Failed: 0, Passed: 39, Skipped: 0, Total: 39, Duration: 22 s
+Scope: PostgreSQL and RabbitMQ Testcontainers. Includes missing receipt data to DLQ,
+retry republish on a publisher-confirmation-enabled channel, and queue-reset isolation.
+The retry test does not inject a broker nack, so nack-path behavior remains unproven.
+
+Command: python3 -m unittest discover -s load-tests/concurrency -p 'test_oversell_demo.py' -v
+Result: Ran 6 tests, OK. Includes false PASS regression: 3 accepted / 47 rejected /
+stock 7 now fails despite inventory conservation; dry-run resync with stale Redis fails.
+
+Disposable stack: postgres:15-alpine on 127.0.0.1:55440; redis:7-alpine on
+127.0.0.1:56379; Order.Api on 127.0.0.1:5065 with Messaging__Provider=InMemory.
+Command: PGPORT=55440 PGPASSWORD=<local password> python3 load-tests/concurrency/oversell_demo.py \
+  --base-url http://127.0.0.1:5065 --stock 10 --requests 50 --psql-container '' \
+  --settle-seconds 3 --ops-token <temporary local STAFF token>
+Output:
+Target              : http://127.0.0.1:5065
+Product             : #1
+Initial stock       : 10
+Concurrent requests : 50
+Stock reset to 10. Orders before: 0. Firing...
+HTTP outcomes        :
+  200 accepted       : 10
+  4xx rejected       : 40 {'409': 40}
+  transport failures : 0
+  p95 latency        : 131 ms
+Inventory audit      :
+  initial stock      : 10
+  accepted units     : 10
+  expected stock     : 0
+  final stock in DB  : 0
+  orders created     : 10
+RESULT: PASS - exact fill, 409 rejects, persisted orders and stock verified.
+HARNESS_EXIT_CODE: 0
+
+Prior verifier runs before the harness fix: 3/47/stock 7 and 0/50/stock 10
+both printed RESULT: PASS because resync omitted ?dryRun=false and the script
+checked conservation only. These are invalid evidence for exact fill.

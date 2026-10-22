@@ -75,7 +75,7 @@ export function DiscrepanciesPage() {
     total: discrepancies?.length || 0,
     open: discrepancies?.filter((d) => d.status === 'Open').length || 0,
     underReview: discrepancies?.filter((d) => d.status === 'UnderReview').length || 0,
-    resolved: discrepancies?.filter((d) => d.status === 'Resolved').length || 0,
+    resolved: discrepancies?.filter((d) => d.status === 'Resolved' || d.status === 'ApprovedWithVariance').length || 0,
     rejected: discrepancies?.filter((d) => d.status === 'Rejected').length || 0,
   };
 

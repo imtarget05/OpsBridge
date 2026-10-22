@@ -101,33 +101,48 @@ During a flash sale, inventory is strictly limited (e.g., 10 items). A naive syn
 
 ## 🚀 Key Achievements & Evidence
 
-**The claim CI actually enforces: the zero-oversell invariant.** Every push runs
+**The claim CI actually enforces: the zero-oversell invariant.** Pushes to `main`
+and pull requests run
 `.github/workflows/ci.yml` → job `concurrency-harness`, which fires 50 concurrent
 purchase attempts at a stock of 10 through
 `load-tests/concurrency/oversell_demo.py` and then **fails the job unless the
 output contains `RESULT: PASS`**. `RESULT: PASS` means the database audit agrees
 exactly: 10 sales persisted, final stock 0, and `accepted + rejected == 50` with no
-lost responses. Reproduce it locally with the same command the job runs.
+lost responses. The harness applies Redis resync with `?dryRun=false` and checks
+the response before firing. A conserved but underfilled sale fails; this guards
+against the earlier false PASS at 3/47/stock 7. The repaired harness passed once
+on a disposable local stack (10 accepted, 40 × 409, stock 0); see
+`docs/evidence/portfolio-opsbridge-local-gates-2026-10-21.txt`. Remote CI has
+not been rerun for these uncommitted changes.
 
 Everything below that is a latency number is a **local single-run observation** from
 the `docs/benchmarks/` experiments, not a CI gate and not a promise. Re-measure
 before quoting one.
 
 - **Zero Overselling Invariant (CI-enforced):** 50 concurrent purchase attempts
-  against a stock of 10 → exactly 10 persisted sales, final stock 0. Checked on
-  every CI run; see above.
+  against a stock of 10 → exactly 10 persisted sales, final stock 0. The
+  configured `concurrency-harness` gates `main` pushes and pull requests; see
+  above for the current-session verification limit.
 - **Latency (local single run, not reproducible in CI):** p95 **29 ms** for the
   tiered path versus **574 ms** for the naive synchronous iteration. Host- and
   load-dependent; the numbers of record live in `docs/benchmarks/`.
 - **Idempotency & Resiliency:** Verified Redis failure fallbacks, RabbitMQ `ack-after-persist` behaviors, and safe retry mechanisms for duplicate/failed requests.
 - **Disaster Recovery:** Automated PostgreSQL backup and clean-restore procedures using `pg_dump -Fc` with SHA-256 verification and application smoke testing against the recovered DB.
 
-### Test suite (verified locally, `-c Release`)
+### Test suite
 
-| Suite | Count | Command |
+The [2026-10-21 commit-pinned audit](docs/evidence/portfolio-audit-2026-10-21.md)
+separates tests run before and after an independent web-only HEAD advance from
+`1fd2822` to `d54eb7e`. Local container results ran on the starting base plus
+the uncommitted fixes; remote CI remains unverified.
+
+| Suite | Latest local status | Command |
 |---|---|---|
-| Unit (use cases, architecture + authorization guards) | **167** | `dotnet test tests/UnitTests/FlashSale.UnitTests.csproj -c Release` |
-| Integration (Testcontainers: real Postgres + Redis + RabbitMQ) | **60** | `dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj -c Release` |
+| FlashSale unit (use cases, architecture + authorization guards) | **178/178 PASS** before web-only HEAD advance | `dotnet test tests/UnitTests/FlashSale.UnitTests.csproj -c Release` |
+| OpsBridge unit + contract | **45/45 + 7/7 PASS** before web-only HEAD advance | `dotnet test tests/OpsBridge.UnitTests/OpsBridge.UnitTests.csproj -c Release` and `dotnet test tests/OpsBridge.ContractTests/OpsBridge.ContractTests.csproj -c Release` |
+| OpsBridge integration (PostgreSQL + RabbitMQ Testcontainers) | **39/39 PASS** before web-only HEAD advance | `dotnet test tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj -c Release --no-restore` |
+| FlashSale integration (PostgreSQL + Redis + RabbitMQ Testcontainers) | **80/80 PASS** in full solution run | `dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj -c Release` |
+| 50/10 harness and Python verdict tests | **10 accepted / 40 × 409 / stock 0 / 10 orders** before web-only HEAD advance; **6/6 Python tests PASS** after it | Commands and sanitized output in `docs/evidence/portfolio-opsbridge-local-gates-2026-10-21.txt` |
 
 ### 🔐 Authorization model (ADR-013 §5)
 

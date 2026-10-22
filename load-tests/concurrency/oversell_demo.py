@@ -12,13 +12,12 @@ same unit of inventory is sold more than once (overselling).
 This script is the *evidence generator*: it resets stock to a small known
 value, fires N concurrent purchase requests, then audits the database.
 
-Acceptance criteria for the experiment
---------------------------------------
-1. All requests get an HTTP response (no 5xx crashes required to see the bug).
-2. accepted + rejected == total requests (no lost responses).
-3. final_stock == initial_stock - accepted  (inventory conservation law).
-   If final_stock < 0  -> OVERSOLD  (bug reproduced, Phase 2 documented).
-   If final_stock == 0 -> race did NOT reproduce (increase load / retry).
+Acceptance criteria for the current zero-oversell gate
+------------------------------------------------------
+All requests complete; exactly min(requests, stock // quantity) are accepted,
+the rest receive 409; persisted orders equal accepted requests; and final
+PostgreSQL stock equals initial stock minus accepted units. A conserved but
+underfilled sale is a failure, not a PASS.
 
 Run
 ---
@@ -144,6 +143,32 @@ def count_orders(container: str | None, product_id: int) -> int:
     return int(psql_scalar(f'SELECT COUNT(*) FROM "Orders" WHERE "ProductId" = {product_id};', container))
 
 
+def resync_applied(result: dict, stock: int) -> bool:
+    """The endpoint reports fixed=false when Redis was already at stock."""
+    return (result.get("postgres") == stock
+            and (result.get("fixed") is True
+                 or (result.get("fixed") is False and result.get("redis") == stock)))
+
+
+def audit_failures(summary: Summary, requests: int, stock: int, quantity: int,
+                   final_stock: int, orders_created: int) -> list[str]:
+    expected_accepted = min(requests, stock // quantity)
+    expected_rejected = requests - expected_accepted
+    failures = []
+    if summary.total != requests or summary.failed:
+        failures.append(f"responses: {summary.total}/{requests}, failures: {summary.failed}")
+    if summary.accepted != expected_accepted:
+        failures.append(f"accepted: {summary.accepted}, expected: {expected_accepted}")
+    if summary.rejected != expected_rejected or summary.status_counts.get("409", 0) != expected_rejected:
+        failures.append(f"409 rejections: {summary.status_counts.get('409', 0)}, expected: {expected_rejected}")
+    expected_stock = stock - summary.accepted * quantity
+    if final_stock != expected_stock or final_stock < 0:
+        failures.append(f"final stock: {final_stock}, expected from accepted: {expected_stock}")
+    if orders_created != summary.accepted:
+        failures.append(f"persisted orders: {orders_created}, accepted: {summary.accepted}")
+    return failures
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Reproduce the flash-sale overselling race condition.")
     ap.add_argument("--base-url", default="http://localhost:5065")
@@ -161,6 +186,8 @@ def main() -> int:
                          "pre-test counter, so the audit below would measure the wrong "
                          "accepted count while still printing PASS.")
     args = ap.parse_args()
+    if args.stock < 0 or args.requests < 1 or args.quantity < 1:
+        ap.error("stock must be nonnegative; requests and quantity must be positive")
     container = args.psql_container or None
 
     print(f"Target              : {args.base_url}")
@@ -174,23 +201,20 @@ def main() -> int:
     # Redis is the fast-path stock mirror (Phase 5+): keep it consistent with the
     # DB we just reset, via the operational runbook endpoint (ADR-003).
     resync_headers = {"Authorization": f"Bearer {args.ops_token}"} if args.ops_token else {}
+    if not args.ops_token:
+        print("RESULT: ABORTED - --ops-token (or OPS_TOKEN) is required to reset Redis.")
+        return 2
     try:
         resync = urllib.request.Request(
-            f"{args.base_url}/internal/resync-stock/{args.product_id}",
+            f"{args.base_url}/internal/resync-stock/{args.product_id}?dryRun=false",
             headers=resync_headers, method="POST")
-        urllib.request.urlopen(resync, timeout=5)
-    except Exception as exc:  # noqa: BLE001 - see the two branches below
-        if args.ops_token:
-            # An operator token was supplied, so this is an authorization or
-            # availability failure, not an absent feature. Bailing out is the only
-            # honest option: continuing would audit a Redis/DB mismatch and could
-            # still report RESULT: PASS for the wrong reason.
-            print(f"Resync failed ({exc}). Redis still holds the pre-test stock counter, so the")
-            print("accepted count below cannot be trusted. Aborting without a verdict.")
-            return 2
-        print("Resync skipped or failed (no --ops-token): POST /internal/resync-stock is")
-        print("STAFF/ADMIN only. The audit below may therefore measure fewer sales than")
-        print("`--stock`; conservation still holds, the headline count does not.")
+        with urllib.request.urlopen(resync, timeout=5) as response:
+            resync_result = json.load(response)
+        if not resync_applied(resync_result, args.stock):
+            raise ValueError(f"resync did not apply stock {args.stock}: {resync_result}")
+    except Exception as exc:  # noqa: BLE001 - abort without a verdict
+        print(f"RESULT: ABORTED - Redis resync failed ({exc}); no concurrency verdict.")
+        return 2
 
     orders_before = count_orders(container, args.product_id)
     print(f"Stock reset to {args.stock}. Orders before: {orders_before}. Firing...")
@@ -221,20 +245,12 @@ def main() -> int:
     print(f"  orders created     : {orders_created}")
     print("-" * 60)
 
-    oversold = final_stock < 0
-    accounting_broken = final_stock != expected_stock
-    if oversold:
-        print(f"RESULT: OVERSELLING REPRODUCED - stock went to {final_stock} (negative).")
-        print("The naive read-check-write endpoint allowed more orders than inventory.")
-    elif accounting_broken:
-        print(f"RESULT: Race condition reproduced (lost update) - expected {expected_stock}, got {final_stock}.")
-        print("Accepted responses exceeded the real inventory decrement.")
-    else:
-        print("RESULT: PASS - inventory conserved (no overselling, no lost updates).")
-        print(f"final_stock({final_stock}) == initial_stock({args.stock}) - accepted_units({summary.accepted * args.quantity}).")
-
-    print("\nNext step (Phase 3): make the stock decrement atomic at the database level")
-    print("and re-run this exact experiment to show final_stock == expected_stock.")
+    failures = audit_failures(summary, args.requests, args.stock, args.quantity,
+                              final_stock, orders_created)
+    if failures:
+        print("RESULT: FAIL - " + "; ".join(failures))
+        return 1
+    print("RESULT: PASS - exact fill, 409 rejects, persisted orders and stock verified.")
     return 0
 
 

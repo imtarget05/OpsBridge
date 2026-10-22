@@ -7,6 +7,7 @@ interface AuthContextType {
   role: UserRole | null;
   isLoading: boolean;
   login: (username: string, role?: UserRole) => Promise<void>;
+  loginWithGoogle: (credential: string) => Promise<void>;
   logout: () => void;
   switchPersona: (role: UserRole) => Promise<void>;
 }
@@ -49,6 +50,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const loginWithGoogle = async (credential: string) => {
+    setIsLoading(true);
+    try {
+      const res = await api.loginWithGoogle(credential);
+      setUser(res.user);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const logout = () => {
     api.logout();
     setUser(null);
@@ -66,6 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         role: user?.role || null,
         isLoading,
         login,
+        loginWithGoogle,
         logout,
         switchPersona,
       }}

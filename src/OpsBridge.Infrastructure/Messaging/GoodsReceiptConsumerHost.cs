@@ -46,7 +46,12 @@ public sealed class GoodsReceiptConsumerHost : BackgroundService
     {
         var factory = new ConnectionFactory { Uri = new Uri(connectionString) };
         var connection = await factory.CreateConnectionAsync();
-        var channel = await connection.CreateChannelAsync();
+        // The failure path republishes before acknowledging the original
+        // delivery. Awaiting a broker confirm on this channel is required:
+        // a successful socket write alone does not prove the retry is safe.
+        var channel = await connection.CreateChannelAsync(new CreateChannelOptions(
+            publisherConfirmationsEnabled: true,
+            publisherConfirmationTrackingEnabled: true));
 
         await RabbitMqTopology.InitializeTopologyAsync(channel);
         return new GoodsReceiptConsumerHost(connection, channel, scopeFactory, logger);
@@ -132,42 +137,39 @@ public sealed class GoodsReceiptConsumerHost : BackgroundService
 
             await using var tx = await unitOfWork.BeginTransactionAsync(ct);
 
-            // Attempt to deserialize and persist GoodsReceipt domain model
-            try
+            // A delivery is complete only when its domain effect is durable.
+            // Let mapping/persistence failures reach the retry/DLQ branch below;
+            // acknowledging them here would permanently lose the receipt.
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var contract = JsonSerializer.Deserialize<GoodsReceiptConfirmedV1>(rawPayload, options);
+            if (contract?.Data == null || string.IsNullOrWhiteSpace(contract.Data.ReceiptNumber))
             {
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var contract = JsonSerializer.Deserialize<GoodsReceiptConfirmedV1>(rawPayload, options);
-                if (contract?.Data != null && !string.IsNullOrWhiteSpace(contract.Data.ReceiptNumber))
-                {
-                    var existingGr = await grRepo.GetByReceiptNumberAsync(contract.Data.ReceiptNumber, ct);
-                    if (existingGr == null)
-                    {
-                        var gr = new OpsBridge.Domain.Reconciliation.GoodsReceipt
-                        {
-                            Id = contract.Data.ReceiptId != Guid.Empty ? contract.Data.ReceiptId : Guid.NewGuid(),
-                            ReceiptNumber = contract.Data.ReceiptNumber,
-                            PurchaseOrderNumber = contract.Data.PurchaseOrderNumber,
-                            SupplierCode = contract.Data.SupplierCode,
-                            ReceivedAt = contract.Data.ReceivedDate,
-                            SourceEventId = contract.EventId,
-                            SourceSystem = contract.Source,
-                            Lines = contract.Data.Items.Select((item, idx) => new OpsBridge.Domain.Reconciliation.GoodsReceiptLine
-                            {
-                                Id = Guid.NewGuid(),
-                                LineNumber = item.PurchaseOrderLineNumber > 0 ? item.PurchaseOrderLineNumber : idx + 1,
-                                ItemSku = item.ItemCode,
-                                ReceivedQuantity = item.QuantityReceived,
-                                UnitOfMeasure = item.UnitOfMeasure,
-                                AllocatedQuantity = 0m
-                            }).ToList()
-                        };
-                        await grRepo.AddAsync(gr, ct);
-                    }
-                }
+                throw new InvalidDataException("GoodsReceiptConfirmed payload is missing receipt data or receiptNumber.");
             }
-            catch (Exception parseEx)
+
+            var existingGr = await grRepo.GetByReceiptNumberAsync(contract.Data.ReceiptNumber, ct);
+            if (existingGr == null)
             {
-                _logger.LogWarning(parseEx, "Could not map payload directly to GoodsReceipt domain entity. Continuing event status update.");
+                var gr = new OpsBridge.Domain.Reconciliation.GoodsReceipt
+                {
+                    Id = contract.Data.ReceiptId != Guid.Empty ? contract.Data.ReceiptId : Guid.NewGuid(),
+                    ReceiptNumber = contract.Data.ReceiptNumber,
+                    PurchaseOrderNumber = contract.Data.PurchaseOrderNumber,
+                    SupplierCode = contract.Data.SupplierCode,
+                    ReceivedAt = contract.Data.ReceivedDate,
+                    SourceEventId = contract.EventId,
+                    SourceSystem = contract.Source,
+                    Lines = contract.Data.Items.Select((item, idx) => new OpsBridge.Domain.Reconciliation.GoodsReceiptLine
+                    {
+                        Id = Guid.NewGuid(),
+                        LineNumber = item.PurchaseOrderLineNumber > 0 ? item.PurchaseOrderLineNumber : idx + 1,
+                        ItemSku = item.ItemCode,
+                        ReceivedQuantity = item.QuantityReceived,
+                        UnitOfMeasure = item.UnitOfMeasure,
+                        AllocatedQuantity = 0m
+                    }).ToList()
+                };
+                await grRepo.AddAsync(gr, ct);
             }
 
             // Update IngestedEvent status
@@ -219,7 +221,9 @@ public sealed class GoodsReceiptConsumerHost : BackgroundService
                     body: ea.Body,
                     cancellationToken: ct);
 
-                // ACK old delivery since we safely rescheduled it
+                // BasicPublishAsync returns only after the broker confirms
+                // this retry. If it throws, the original stays unacked and
+                // can be redelivered instead of being silently lost.
                 await _channel.BasicAckAsync(deliveryTag, multiple: false, ct);
             }
             else

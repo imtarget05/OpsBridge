@@ -1,10 +1,23 @@
 # Current Tasks — ACTIVE GOAL: OpsBridge Platform
 
-## Senior Engineering Phase Pack — F2 (local gates PASS; commit pending)
-- OpsBridge F2 implementation complete on the current working tree. Local gates verified in this phase: `dotnet format --verify-no-changes` PASS, `dotnet build AzureFlashSale.slnx -c Release` PASS, FlashSale unit 172/172, FlashSale integration (Testcontainers) 62/62, OpsBridge unit 41/41, OpsBridge integration 21/21, isolated 50/10 concurrency harness PASS (no oversell). Total tests run in F2 = 296. Evidence: `docs/evidence/F2/66dca40/`.
+> **Current checkpoint (2026-10-21, `main` @ `d54eb7e150e5d0f74b54f69e122dc5c57c164ff1`; audit started at `1fd2822649d673f037372c2b34b4de38a9c31fab`):**
+> the F2 section below is historical, including its `66dca40` HEAD and
+> pending-commit statement. A fresh portfolio audit is at
+> [`docs/evidence/portfolio-audit-2026-10-21.md`](../docs/evidence/portfolio-audit-2026-10-21.md).
+> Current local PASS on uncommitted fixes: FlashSale unit 178/178, OpsBridge
+> unit 45/45, contract 7/7, OpsBridge integration 39/39, Python harness
+> verdict tests 6/6, and a disposable 50/10 run with exactly 10 accepted,
+> 40 × 409, 10 persisted, stock 0. See
+> [`docs/evidence/portfolio-opsbridge-local-gates-2026-10-21.txt`](../docs/evidence/portfolio-opsbridge-local-gates-2026-10-21.txt).
+> FlashSale integration, web E2E and remote CI were not rerun. The consumer
+> false-success and harness false-PASS defects have local regression proof.
+> The reservation-compensation P1 still needs a durable remediation design.
+
+## Historical Senior Engineering Phase Pack — F2 (recorded at `66dca40`)
+- OpsBridge F2 implementation was complete on the then-current working tree. Local gates recorded in that phase: `dotnet format --verify-no-changes` PASS, `dotnet build AzureFlashSale.slnx -c Release` PASS, FlashSale unit 172/172, FlashSale integration (Testcontainers) 62/62, OpsBridge unit 41/41, OpsBridge integration 21/21, isolated 50/10 concurrency harness PASS (no oversell). Total tests run in F2 = 296. Evidence: `docs/evidence/F2/66dca40/`.
 - Not run in F2: NuGet audit, Trivy, and OCI image scans were exercised in F1, not re-run here. Remote GitHub CI is `NOT_RUN` because this branch is uncommitted and no push was authorized.
-- Human acceptance is pending; do not begin F3 until commit + human acceptance are recorded.
-- Base/HEAD remains `66dca40380e352757a84d1bf47a7de3a6ed77fe0`; the worktree contains this phase's additions (not yet committed).
+- At that checkpoint human acceptance was pending; the F2 note did not authorize F3.
+- Base/HEAD at that checkpoint was `66dca40380e352757a84d1bf47a7de3a6ed77fe0`; those uncommitted additions have since been superseded by later history.
 
 ## Phase G0 — Baseline Audit & Reusability Verification (COMPLETED)
 - [x] Run baseline test suite: 172/172 UnitTests passed, 62/62 IntegrationTests passed.
@@ -146,7 +159,9 @@ Phases per the automation spec; each phase is only ticked with evidence.
       - LIMITATIONS: notification is structured log + audit row (dashboard/email
         PLANNED, spec §6 "notify dashboard/email"); alert resolution/ack flow
         lands with the dashboard phase; AI recommendation inputs (velocity, lead
-        time) NOT implemented — and stock values never come from AI.
+        time) implemented via `GenerateReorderRecommendationUseCase` and
+        `IAiAutomationService` (deterministic EOQ model grounded on PostgreSQL numbers,
+        stock values never fabricated).
 - [x] Phase 4 — daily business report (§7), verified locally:
       - DailyReportUseCase aggregates ONLY from PostgreSQL (orders by status,
         revenue on confirmed orders at the stored flash-sale price, failed
@@ -161,11 +176,12 @@ Phases per the automation spec; each phase is only ticked with evidence.
       - Tests: 91 unit + 31 integration green; live smoke 12/12 (report from DB:
         orders=11 confirmed=3 cancelled=6, low-stock list correct, upsert single
         row, audit DailyReport|manual|Success).
-      - LIMITATIONS: AI summary of the metrics NOT implemented (spec §7 marks it
-        optional) — PLANNED; refundCount is always 0 because no refund workflow
-        exists (documented, never faked); local revenue reads 0 because the
-        seeded product price is 0 in this DB (the integration test asserts the
-        150/75 math with a set price).
+      - LIMITATIONS: AI summary of the metrics implemented via
+        `GenerateDailyReportSummaryUseCase` and `IAiAutomationService`
+        (executive insights grounded in DB aggregates only); refundCount is always 0
+        because no refund workflow exists (documented, never faked); local revenue
+        reads 0 because the seeded product price is 0 in this DB (the integration
+        test asserts the 150/75 math with a set price).
 - [x] Phase 5 — AI content generation + support triage (§8/§9) — DONE 2026-09-23:
       approval state machine (REVIEW_REQUIRED→APPROVED/REJECTED→PUBLISHED,
       publish-before-approve = 409, human approval mandatory §13), grounded

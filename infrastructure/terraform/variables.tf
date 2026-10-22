@@ -22,3 +22,21 @@ variable "image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "enable_postgres_ha" {
+  description = "Enable Zone-Redundant High Availability for PostgreSQL Flexible Server (production grade)."
+  type        = bool
+  default     = false
+}
+
+variable "postgres_sku_name" {
+  description = "SKU for PostgreSQL Flexible Server. Dev uses B_Standard_B1ms; HA/Prod uses GP_Standard_D2s_v3."
+  type        = string
+  default     = "B_Standard_B1ms"
+}
+
+variable "redis_sku" {
+  description = "SKU tier for Azure Cache for Redis: Basic (dev), Standard (replicated HA), Premium (clustered/multi-AZ)."
+  type        = string
+  default     = "Basic"
+}

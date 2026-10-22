@@ -27,6 +27,14 @@ public sealed class CheckoutSagaRepository(AppDbContext db) : ICheckoutSagaRepos
         }
         else
         {
+            if (existing.Version != saga.Version)
+            {
+                throw new DbUpdateConcurrencyException(
+                    $"Optimistic concurrency violation: CheckoutSaga {saga.SagaId} presented version {saga.Version} but database version is {existing.Version}.");
+            }
+
+            db.Entry(existing).OriginalValues[nameof(CheckoutSagaState.Version)] = saga.Version;
+
             existing.OrderId = saga.OrderId;
             existing.Status = saga.Status;
             existing.InventoryStatus = saga.InventoryStatus;
@@ -38,5 +46,6 @@ public sealed class CheckoutSagaRepository(AppDbContext db) : ICheckoutSagaRepos
         }
 
         await db.SaveChangesAsync(ct);
+        saga.Version = existing?.Version ?? saga.Version;
     }
 }

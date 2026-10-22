@@ -9,6 +9,7 @@ import { Select } from '../../components/ui/Select';
 import { StatusBadge, DiscrepancySeverityBadge } from '../../components/ui/Badge';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import type { ReconciliationResult } from '../../types';
+import { useAuth } from '../auth/AuthContext';
 import {
   GitCompare,
   Play,
@@ -20,9 +21,12 @@ import {
   Truck,
   Receipt,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 
 export function MatchingWorkspacePage() {
+  const { user } = useAuth();
+  const canExecute = user?.role === 'Operator' || user?.role === 'Admin' || user?.role === 'FinanceReviewer';
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -117,22 +121,33 @@ export function MatchingWorkspacePage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
             <GitCompare className="w-6 h-6 text-blue-600" />
-            <span>Three-Way Matching Workspace</span>
+            <span>Không Gian Đối Soát 3 Bên (3-Way Matching Workspace)</span>
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Reconcile Purchase Orders, physical Goods Receipts, and Accounts Payable Invoices with configurable tolerance thresholds.
+            Tự động đối chiếu chéo Đơn mua hàng (PO), Phiếu thực nhập kho (GR) và Hóa đơn nhà cung cấp (INV) theo biên độ dung sai cho phép.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {!canExecute && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-800">
+              <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>Chỉ đọc ({user?.role || 'Auditor'}): Không có quyền chạy đối soát</span>
+            </div>
+          )}
           <Button
             variant="primary"
             size="sm"
             onClick={handleRunReconciliation}
-            disabled={!selectedInvoice || runMutation.isPending}
-            className="flex items-center gap-1.5 shadow-sm"
+            disabled={!selectedInvoice || runMutation.isPending || !canExecute}
+            title={!canExecute ? `Quyền ${user?.role || 'Auditor'} chỉ đọc` : undefined}
+            className={`flex items-center gap-1.5 shadow-sm font-medium ${
+              !canExecute
+                ? 'bg-slate-200 text-slate-400 cursor-not-allowed hover:bg-slate-200 border-slate-300'
+                : 'bg-blue-600 hover:bg-blue-700 text-white'
+            }`}
           >
-            <Play className="w-4 h-4" />
-            <span>{runMutation.isPending ? 'Reconciling...' : 'Execute 3-Way Match'}</span>
+            <Play className={`w-4 h-4 ${!canExecute ? 'fill-slate-400 text-slate-400' : 'fill-white text-white'}`} />
+            <span>{runMutation.isPending ? 'Đang đối soát...' : 'Thực Thi Đối Soát 3 Bên (Execute 3-Way Match)'}</span>
           </Button>
         </div>
       </div>
@@ -173,27 +188,29 @@ export function MatchingWorkspacePage() {
             </div>
 
             {selectedInvoice && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-slate-50 rounded-lg text-xs">
-                <div>
-                  <span className="text-slate-500 block">Status:</span>
-                  <StatusBadge status={selectedInvoice.status} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 p-3.5 bg-slate-50 border border-slate-200/80 rounded-lg text-xs">
+                <div className="min-w-0 flex flex-col justify-between">
+                  <span className="text-slate-500 block mb-1">Trạng thái:</span>
+                  <div>
+                    <StatusBadge status={selectedInvoice.status} />
+                  </div>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Supplier:</span>
-                  <span className="font-semibold text-slate-900 truncate block">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Nhà cung cấp:</span>
+                  <span className="font-semibold text-slate-900 truncate block" title={selectedInvoice.supplierName}>
                     {selectedInvoice.supplierName}
                   </span>
-                  <span className="font-mono text-slate-400">{selectedInvoice.supplierCode}</span>
+                  <span className="font-mono text-slate-400 text-[11px]">{selectedInvoice.supplierCode}</span>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">PO Reference:</span>
-                  <span className="font-mono font-semibold text-blue-600">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Đơn mua (PO Ref):</span>
+                  <span className="font-mono font-semibold text-blue-600 block truncate">
                     {selectedInvoice.purchaseOrderNumber}
                   </span>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Total Amount:</span>
-                  <span className="font-mono font-bold text-slate-900">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Tổng tiền hóa đơn:</span>
+                  <span className="font-mono font-bold text-slate-900 block truncate">
                     {formatCurrency(selectedInvoice.totalAmount, selectedInvoice.currency)}
                   </span>
                 </div>
@@ -310,7 +327,7 @@ export function MatchingWorkspacePage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
-                      {po.lines.map((l) => (
+                      {(po.lines ?? []).map((l) => (
                         <tr key={l.id}>
                           <td className="p-1.5 font-semibold text-slate-900">{l.itemSku}</td>
                           <td className="p-1.5 text-right">{l.orderedQuantity}</td>
@@ -374,7 +391,7 @@ export function MatchingWorkspacePage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                        {gr.lines.map((l) => (
+                        {(gr.lines ?? []).map((l) => (
                           <tr key={l.id}>
                             <td className="py-1 font-semibold text-slate-800">{l.itemSku}</td>
                             <td className="py-1 text-right">{l.receivedQuantity}</td>
@@ -425,7 +442,7 @@ export function MatchingWorkspacePage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
-                      {selectedInvoice.lines.map((l) => (
+                      {(selectedInvoice.lines ?? []).map((l) => (
                         <tr key={l.id}>
                           <td className="p-1.5 font-semibold text-slate-900">{l.itemSku}</td>
                           <td className="p-1.5 text-right">{l.invoicedQuantity}</td>
@@ -454,34 +471,36 @@ export function MatchingWorkspacePage() {
 
       {/* Reconciliation Execution Result Banner */}
       {reconResult && (
-        <Card className={`border-2 ${reconResult.status === 'Matched' ? 'border-emerald-500 bg-emerald-50/20' : 'border-rose-400 bg-rose-50/20'}`}>
+        <Card className={`border-2 shadow-md ${reconResult.status === 'Matched' ? 'border-emerald-500 bg-emerald-50/20' : 'border-rose-400 bg-rose-50/20'}`}>
           <CardHeader className="py-3 px-4 border-b border-slate-100">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 {reconResult.status === 'Matched' ? (
-                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
                 ) : (
-                  <AlertTriangle className="w-5 h-5 text-rose-600" />
+                  <AlertTriangle className="w-6 h-6 text-rose-600 shrink-0" />
                 )}
                 <div>
-                  <h3 className="font-bold text-slate-900">
-                    Reconciliation Result: {reconResult.status}
+                  <h3 className="font-bold text-slate-900 text-base">
+                    {reconResult.status === 'Matched'
+                      ? 'Đối Soát Thành Công (Matched & Ready for Payment)'
+                      : 'Phát Hiện Sai Lệch (Discrepancy Detected)'}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Invoice {reconResult.invoiceNumber} against PO {reconResult.purchaseOrderNumber}
+                    Hóa đơn <span className="font-mono font-semibold text-slate-700">{reconResult.invoiceNumber}</span> đối soát với Đơn mua <span className="font-mono font-semibold text-blue-600">{reconResult.purchaseOrderNumber}</span>
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={reconResult.status} />
-                {reconResult.discrepancies.length > 0 && (
+                {(reconResult.discrepancies ?? []).length > 0 && (
                   <Button
                     variant="primary"
                     size="sm"
                     onClick={() => navigate('/discrepancies')}
-                    className="flex items-center gap-1.5 text-xs bg-rose-600 hover:bg-rose-700"
+                    className="flex items-center gap-1.5 text-xs bg-rose-600 hover:bg-rose-700 shadow-sm"
                   >
-                    <span>Investigate Discrepancies</span>
+                    <span>Xử lý sai lệch (Investigate)</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </Button>
                 )}
@@ -492,59 +511,59 @@ export function MatchingWorkspacePage() {
             {/* Quantitative Summary */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-white border border-slate-200 rounded-lg text-xs">
               <div>
-                <span className="text-slate-500 block">Ordered Quantity:</span>
+                <span className="text-slate-500 block">Số lượng đặt (Ordered):</span>
                 <span className="font-mono font-bold text-slate-900">
-                  {reconResult.totalQuantityOrdered} PCS
+                  {reconResult.totalQuantityOrdered ?? 0} PCS
                 </span>
               </div>
               <div>
-                <span className="text-slate-500 block">Received Quantity:</span>
+                <span className="text-slate-500 block">Thực nhận tại kho (Received):</span>
                 <span className="font-mono font-bold text-slate-900">
-                  {reconResult.totalQuantityReceived} PCS
+                  {reconResult.totalQuantityReceived ?? 0} PCS
                 </span>
               </div>
               <div>
-                <span className="text-slate-500 block">Invoiced Quantity:</span>
+                <span className="text-slate-500 block">Số lượng ghi HĐ (Invoiced):</span>
                 <span className="font-mono font-bold text-slate-900">
-                  {reconResult.totalQuantityInvoiced} PCS
+                  {reconResult.totalQuantityInvoiced ?? 0} PCS
                 </span>
               </div>
               <div>
-                <span className="text-slate-500 block">Amount Variance:</span>
-                <span className={`font-mono font-bold ${reconResult.totalAmountVariance === 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                  {formatCurrency(reconResult.totalAmountVariance, selectedInvoice?.currency || 'VND')}
+                <span className="text-slate-500 block">Chênh lệch tiền (Variance):</span>
+                <span className={`font-mono font-bold ${(reconResult.totalAmountVariance ?? 0) === 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  {formatCurrency(reconResult.totalAmountVariance ?? 0, selectedInvoice?.currency || 'VND')}
                 </span>
               </div>
             </div>
 
             {/* Discrepancies List */}
-            {reconResult.discrepancies.length > 0 && (
+            {(reconResult.discrepancies ?? []).length > 0 && (
               <div>
                 <h4 className="text-xs uppercase font-semibold text-rose-700 mb-2 flex items-center gap-1.5">
                   <AlertTriangle className="w-4 h-4" />
-                  <span>Detected Discrepancies ({reconResult.discrepancies.length})</span>
+                  <span>Danh Sách Sai Lệch Phát Hiện ({(reconResult.discrepancies ?? []).length})</span>
                 </h4>
                 <div className="border border-rose-200 rounded-lg overflow-hidden bg-white">
                   <table className="w-full text-left text-xs text-slate-700">
                     <thead className="bg-rose-50/75 uppercase text-[10px] font-semibold text-rose-800">
                       <tr>
-                        <th className="p-2.5">Type</th>
-                        <th className="p-2.5">Severity</th>
-                        <th className="p-2.5">SKU</th>
-                        <th className="p-2.5">Expected Value</th>
-                        <th className="p-2.5">Actual Value</th>
-                        <th className="p-2.5">Details</th>
+                        <th className="p-2.5">Phân loại</th>
+                        <th className="p-2.5">Mức độ</th>
+                        <th className="p-2.5">Mã SKU</th>
+                        <th className="p-2.5">Giá trị Kho (Kỳ vọng)</th>
+                        <th className="p-2.5">Giá trị Hóa đơn (Thực tế)</th>
+                        <th className="p-2.5">Chi tiết phân tích</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-rose-100">
-                      {reconResult.discrepancies.map((d) => (
+                      {(reconResult.discrepancies ?? []).map((d) => (
                         <tr key={d.id} className="hover:bg-rose-50/30">
                           <td className="p-2.5 font-semibold text-slate-900">{d.type}</td>
                           <td className="p-2.5">
                             <DiscrepancySeverityBadge severity={d.severity} />
                           </td>
                           <td className="p-2.5 font-mono">{d.itemSku || '—'}</td>
-                          <td className="p-2.5 font-mono">{d.expectedValue}</td>
+                          <td className="p-2.5 font-mono text-emerald-700 font-medium">{d.expectedValue}</td>
                           <td className="p-2.5 font-mono font-semibold text-rose-700">
                             {d.actualValue}
                           </td>
@@ -558,27 +577,27 @@ export function MatchingWorkspacePage() {
             )}
 
             {/* Allocations Table */}
-            {reconResult.allocations.length > 0 && (
+            {(reconResult.allocations ?? []).length > 0 && (
               <div>
                 <h4 className="text-xs uppercase font-semibold text-emerald-800 mb-2 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>Allocated Goods Receipts ({reconResult.allocations.length} line commitments)</span>
+                  <span>Phân Bổ Hàng Nhập Kho Đã Khớp ({(reconResult.allocations ?? []).length} cam kết dòng hàng)</span>
                 </h4>
                 <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
                   <table className="w-full text-left text-xs text-slate-700">
                     <thead className="bg-slate-50 uppercase text-[10px] font-semibold text-slate-600">
                       <tr>
-                        <th className="p-2.5">GR Line ID</th>
-                        <th className="p-2.5">Invoice Line ID</th>
-                        <th className="p-2.5 text-right">Allocated Qty</th>
-                        <th className="p-2.5 text-right">Unit Price</th>
-                        <th className="p-2.5 text-right">Committed At</th>
+                        <th className="p-2.5">Mã Dòng Nhập Kho (GR)</th>
+                        <th className="p-2.5">Mã Dòng Hóa Đơn (INV)</th>
+                        <th className="p-2.5 text-right">SL Phân Bổ</th>
+                        <th className="p-2.5 text-right">Đơn Giá Khớp</th>
+                        <th className="p-2.5 text-right">Thời Điểm Khóa</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
-                      {reconResult.allocations.map((a) => (
+                      {(reconResult.allocations ?? []).map((a) => (
                         <tr key={a.id}>
-                          <td className="p-2.5 text-slate-500 truncate max-w-[150px]">
+                          <td className="p-2.5 text-slate-600 font-semibold truncate max-w-[150px]">
                             {a.goodsReceiptLineId}
                           </td>
                           <td className="p-2.5 text-slate-500 truncate max-w-[150px]">
@@ -607,7 +626,7 @@ export function MatchingWorkspacePage() {
       {runMutation.isError && (
         <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg text-sm text-rose-700 flex items-center gap-2">
           <AlertTriangle className="w-5 h-5 flex-shrink-0 text-rose-600" />
-          <span>Failed to run reconciliation: {(runMutation.error as Error).message}</span>
+          <span>Lỗi khi chạy đối soát: {(runMutation.error as Error).message}</span>
         </div>
       )}
     </div>

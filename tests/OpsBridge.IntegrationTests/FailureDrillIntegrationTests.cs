@@ -142,7 +142,9 @@ public class FailureDrillIntegrationTests(OpsBridgeFixture fixture)
         await fixture.ResetAsync();
 
         var eventId = Guid.NewGuid();
-        var payload = $"{{\"eventId\":\"{eventId}\",\"eventType\":\"GoodsReceiptConfirmed\",\"data\":{{}}}}";
+        var payload = File.ReadAllText(Path.Combine("..", "..", "..", "..", "fixtures", "valid-goods-receipt-v1.json"))
+            .Replace("a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d", eventId.ToString(), StringComparison.Ordinal)
+            .Replace("b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e", Guid.NewGuid().ToString(), StringComparison.Ordinal);
 
         using (var scope = fixture.Factory.Services.CreateScope())
         {
@@ -204,6 +206,7 @@ public class FailureDrillIntegrationTests(OpsBridgeFixture fixture)
             var state = await db.ConsumerProcessingStates.FirstOrDefaultAsync(i => i.EventId == eventId && i.ConsumerGroup == "goods-receipt-consumer");
             Assert.NotNull(state);
             Assert.Equal(ConsumerStatus.Completed, state.Status);
+            Assert.Equal(1, await db.GoodsReceipts.CountAsync(g => g.SourceEventId == eventId));
         }
 
         // Publish 2nd message (simulating at-least-once duplicate): consumer detects state entry and acks idempotently
@@ -227,7 +230,167 @@ public class FailureDrillIntegrationTests(OpsBridgeFixture fixture)
             var db = scope.ServiceProvider.GetRequiredService<OpsBridgeDbContext>();
             var stateCount = await db.ConsumerProcessingStates.CountAsync(i => i.EventId == eventId && i.ConsumerGroup == "goods-receipt-consumer");
             Assert.Equal(1, stateCount);
+            Assert.Equal(1, await db.GoodsReceipts.CountAsync(g => g.SourceEventId == eventId));
         }
+    }
+
+    [Fact]
+    public async Task MissingReceiptData_IsDeadLettered_WithoutMarkingEventCompleted()
+    {
+        await fixture.ResetAsync();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"eventId\":\"{eventId}\",\"eventType\":\"GoodsReceiptConfirmed\",\"data\":{{}}}}";
+
+        using (var scope = fixture.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OpsBridgeDbContext>();
+            db.IngestedEvents.Add(new IngestedEvent
+            {
+                EventId = eventId,
+                EventType = "GoodsReceiptConfirmed",
+                SchemaVersion = "1.0",
+                Source = "factoryflow",
+                RawPayload = payload,
+                Status = EventProcessingStatus.Received,
+                OccurredAt = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddDbContext<OpsBridgeDbContext>(opt => opt.UseNpgsql(fixture.ConnectionString));
+        serviceCollection.AddScoped<IConsumerProcessingRepository, EfConsumerProcessingRepository>();
+        serviceCollection.AddScoped<IGoodsReceiptRepository, EfGoodsReceiptRepository>();
+        serviceCollection.AddScoped<IIngestedEventRepository, EfIngestedEventRepository>();
+        serviceCollection.AddScoped<OpsBridge.Application.Common.IUnitOfWork, EfUnitOfWork>();
+        using var sp = serviceCollection.BuildServiceProvider();
+
+        using var consumerHost = await GoodsReceiptConsumerHost.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<GoodsReceiptConsumerHost>.Instance);
+        await using var publisher = await RabbitMqEventPublisher.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            NullLogger<RabbitMqEventPublisher>.Instance);
+        await publisher.PublishAsync(
+            "opsbridge.events.inbound.goods-receipt",
+            payload,
+            new Dictionary<string, object?> { ["x-retry-count"] = 3 });
+
+        var delivery = await consumerHost.Channel.BasicGetAsync(RabbitMqTopology.InboundQueue, autoAck: false);
+        Assert.NotNull(delivery);
+        Assert.Contains(eventId.ToString(), Encoding.UTF8.GetString(delivery.Body.ToArray()), StringComparison.OrdinalIgnoreCase);
+        await consumerHost.HandleMessageAsync(new BasicDeliverEventArgs(
+            consumerTag: "test-tag",
+            deliveryTag: delivery.DeliveryTag,
+            redelivered: false,
+            exchange: RabbitMqTopology.Exchange,
+            routingKey: "opsbridge.events.inbound.goods-receipt",
+            properties: delivery.BasicProperties,
+            body: delivery.Body), CancellationToken.None);
+
+        using var verifyScope = sp.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<OpsBridgeDbContext>();
+        Assert.Equal(EventProcessingStatus.Received,
+            (await verifyDb.IngestedEvents.SingleAsync(e => e.EventId == eventId)).Status);
+        Assert.False(await verifyDb.ConsumerProcessingStates.AnyAsync(s => s.EventId == eventId));
+        Assert.False(await verifyDb.GoodsReceipts.AnyAsync(g => g.SourceEventId == eventId));
+        Assert.Contains(await verifyDb.DeadLetterEvents.ToListAsync(),
+            e => e.EventId == eventId && e.Reason.Contains("missing receipt data", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Retry_IsBrokerConfirmedBeforeOriginalDeliveryIsAcked()
+    {
+        await fixture.ResetAsync();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"eventId\":\"{eventId}\",\"eventType\":\"GoodsReceiptConfirmed\",\"error\":\"FAIL_FORCED_POISON\"}}";
+
+        var services = new ServiceCollection();
+        services.AddDbContext<OpsBridgeDbContext>(opt => opt.UseNpgsql(fixture.ConnectionString));
+        services.AddScoped<IConsumerProcessingRepository, EfConsumerProcessingRepository>();
+        services.AddScoped<IGoodsReceiptRepository, EfGoodsReceiptRepository>();
+        services.AddScoped<IIngestedEventRepository, EfIngestedEventRepository>();
+        services.AddScoped<OpsBridge.Application.Common.IUnitOfWork, EfUnitOfWork>();
+        using var sp = services.BuildServiceProvider();
+
+        using var consumerHost = await GoodsReceiptConsumerHost.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<GoodsReceiptConsumerHost>.Instance);
+        await using var publisher = await RabbitMqEventPublisher.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            NullLogger<RabbitMqEventPublisher>.Instance);
+
+        Assert.True(await publisher.PublishAsync("opsbridge.events.inbound.goods-receipt", payload));
+        var original = await consumerHost.Channel.BasicGetAsync(RabbitMqTopology.InboundQueue, autoAck: false);
+        Assert.NotNull(original);
+        Assert.Contains(eventId.ToString(), Encoding.UTF8.GetString(original.Body.ToArray()), StringComparison.OrdinalIgnoreCase);
+
+        await consumerHost.HandleMessageAsync(new BasicDeliverEventArgs(
+            consumerTag: "test-tag",
+            deliveryTag: original.DeliveryTag,
+            redelivered: false,
+            exchange: RabbitMqTopology.Exchange,
+            routingKey: "opsbridge.events.inbound.goods-receipt",
+            properties: original.BasicProperties,
+            body: original.Body), CancellationToken.None);
+
+        var retry = await consumerHost.Channel.BasicGetAsync(RabbitMqTopology.InboundQueue, autoAck: false);
+        Assert.NotNull(retry);
+        Assert.Equal(payload, Encoding.UTF8.GetString(retry.Body.ToArray()));
+        Assert.NotNull(retry.BasicProperties.Headers);
+        Assert.True(retry.BasicProperties.Headers.TryGetValue("x-retry-count", out var retryHeader));
+        Assert.Equal(1, retryHeader switch
+        {
+            int i => i,
+            long l => checked((int)l),
+            byte[] bytes => int.Parse(Encoding.UTF8.GetString(bytes)),
+            _ => throw new InvalidOperationException("Unexpected RabbitMQ retry header type")
+        });
+        await consumerHost.Channel.BasicAckAsync(retry.DeliveryTag, multiple: false);
+    }
+
+    [Fact]
+    public async Task Retry_WhenPublishThrows_OriginalDeliveryIsNotAcked()
+    {
+        await fixture.ResetAsync();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"eventId\":\"{eventId}\",\"eventType\":\"GoodsReceiptConfirmed\",\"error\":\"FAIL_FORCED_POISON\"}}";
+
+        var services = new ServiceCollection();
+        services.AddDbContext<OpsBridgeDbContext>(opt => opt.UseNpgsql(fixture.ConnectionString));
+        services.AddScoped<IConsumerProcessingRepository, EfConsumerProcessingRepository>();
+        services.AddScoped<IGoodsReceiptRepository, EfGoodsReceiptRepository>();
+        services.AddScoped<IIngestedEventRepository, EfIngestedEventRepository>();
+        services.AddScoped<OpsBridge.Application.Common.IUnitOfWork, EfUnitOfWork>();
+        using var sp = services.BuildServiceProvider();
+
+        using var consumerHost = await GoodsReceiptConsumerHost.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<GoodsReceiptConsumerHost>.Instance);
+        await using var publisher = await RabbitMqEventPublisher.CreateAsync(
+            fixture.RabbitMqConnectionString,
+            NullLogger<RabbitMqEventPublisher>.Instance);
+
+        Assert.True(await publisher.PublishAsync("opsbridge.events.inbound.goods-receipt", payload));
+        var original = await consumerHost.Channel.BasicGetAsync(RabbitMqTopology.InboundQueue, autoAck: false);
+        Assert.NotNull(original);
+
+        // Close channel before retry publish to simulate broker disconnect / publisher reject
+        await consumerHost.Channel.CloseAsync();
+
+        // HandleMessageAsync must fail on BasicPublishAsync and never invoke BasicAckAsync
+        await Assert.ThrowsAnyAsync<Exception>(() => consumerHost.HandleMessageAsync(new BasicDeliverEventArgs(
+            consumerTag: "test-tag",
+            deliveryTag: original.DeliveryTag,
+            redelivered: false,
+            exchange: RabbitMqTopology.Exchange,
+            routingKey: "opsbridge.events.inbound.goods-receipt",
+            properties: original.BasicProperties,
+            body: original.Body), CancellationToken.None));
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-﻿# Recruiter Evidence — OpsBridge (FlashSale order reliability + OpsBridge operations)
+# Recruiter Evidence — OpsBridge (FlashSale order reliability + OpsBridge operations)
 
 > **Repository note (2026-10-21).** This audit was performed against the
 > **FlashSale** bounded context and is kept verbatim below, with its original
@@ -16,6 +16,14 @@
 > was run (below). The OpsBridge context has its own evidence files —
 > `docs/evidence/ci-verification.md`, `docs/known-issues.md`,
 > `docs/requirements/` — and its own decisions (ADR-017 to ADR-021).
+> **2026-10-21 correction:** the historical `RESULT: PASS` gate described
+> below checked inventory conservation but did not prove exact 10/40 fill.
+> Resync called the endpoint in default dry-run mode, allowing false PASS at
+> 3/47/stock 7 or 0/50/stock 10. The uncommitted harness fix now applies and
+> verifies resync, requires exact counts, and passed one disposable local
+> 10/40/stock 0 run. Use
+> [`docs/evidence/portfolio-audit-2026-10-21.md`](evidence/portfolio-audit-2026-10-21.md)
+> for current claims. Remote CI has not rerun these fixes.
 
 Every claim below was checked by opening the cited file, confirming the line number, and
 running the stated command on this machine. Where a claim could not be reproduced, it says so.
@@ -59,17 +67,18 @@ RESULT: PASS - inventory conserved (no overselling, no lost updates).
 | Clean-Architecture dependency direction is an **executable** rule that fails the build, not a convention | `tests/UnitTests/ArchitectureTests.cs` |
 | Local docker compose stack healthy — 6 containers (2026-10-21), with a negative test (stop RabbitMQ → worker reports `unhealthy`, recovers on its own) | `docs/known-issues.md` |
 | Outbox/Inbox live behaviour (a ~20-minute broker outage ends in DLQ, `/api/outbox/requeue` revives it, 5× duplicate `MessageId` → 1 inbox row), saga 21/21 live, 3 backup/restore drills | `docs/evidence/v2/outbox-inbox-2026-09-24.md`, `docs/evidence/saga/`, `docs/evidence/backup/` |
+| The optimistic-concurrency `Version` token — concurrent updates with conflicting versions throw `DbUpdateConcurrencyException`, preventing lost updates | `tests/UnitTests/CheckoutSagaConcurrencyTests.cs`, `tests/IntegrationTests/CheckoutSagaConcurrencyTests.cs` (PostgreSQL Testcontainers CI verified) |
+| Outbox orphan reservation compensation & reconciler repair — asserts 503, released Redis, committed reserved row, no release row, then repair | `tests/UnitTests/SubmitOrderCompensationFailureTests.cs` (`WhenQueueRejectsAndCompensationOutboxFails_RedisIsReleased_AndReconcilerCanRepair`) |
 
 **Not verified — do not claim these:**
 
 | Claim | Status |
 |---|---|
-| A real payment service provider | **Never exercised.** The local payment service is a simulation returning `sim_tx_…`; no PSP contract, credential or behaviour exists anywhere in this repository. |
+| A real payment service provider | **Never exercised.** The local payment service is a deterministic simulation returning `sim_tx_…`; no PSP contract, credential or external behavior exists in this repository (ADR-017). |
 | The Kubernetes `prod` overlay as a running system | **Configuration, not a deployed system** — it has not been applied to a real AKS cluster (`docs/adr/020-opsbridge-web-deployment-and-client-token-risk.md`, `docs/evidence/kubernetes/phase7c-readiness.md`). |
 | Latency figures (p95 29 ms tiered / 574 ms naive) | **Local single runs, not CI gates.** Only the zero-oversell invariant is CI-enforced; re-measure before quoting a number. |
 | A production database shape | **None.** The schema is verified *from empty* (every integration fixture runs `EnsureDeletedAsync` + `MigrateAsync`) against local PostgreSQL — no production dataset, volume or query-plan evidence. |
-| The optimistic-concurrency `Version` token | **Declared but never exercised** by any test (stated in this document, above). |
-| Pod-level liveness/readiness for the worker | **Absent by decision** — container-level healthcheck only (`docs/known-issues.md`). |
+| Pod-level liveness/readiness for the worker | **Absent by decision** — container-level healthcheck only (`docs/known-issues.md`, `infrastructure/kubernetes/base/worker/deployment.yaml`). Worker has no inbound HTTP listener. |
 | `/api/v1/auth/login` as authentication | **A local demo persona selector**, mapped only in Development/Test; there is no external identity provider (ADR-017). |
 
 > This document is an **index of evidence, not a production-readiness claim**. The

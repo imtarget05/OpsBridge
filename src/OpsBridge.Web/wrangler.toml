@@ -1,0 +1,9 @@
+# Cloudflare Pages — OpsBridge Dashboard SPA (React 19 + Vite + TailwindCSS 4)
+# Deploy: npx wrangler pages deploy dist --project-name=opsbridge-dashboard
+# Or connect via Cloudflare dashboard: Framework preset Vite, build `npm run build`, output `dist`
+name = "opsbridge-dashboard"
+pages_build_output_dir = "./dist"
+compatibility_date = "2024-11-01"
+
+# SPA fallback — all routes serve index.html (React Router)
+# Cloudflare Pages handles this via _redirects (see public/_redirects)

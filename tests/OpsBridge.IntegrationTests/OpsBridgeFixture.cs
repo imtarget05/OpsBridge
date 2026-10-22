@@ -5,8 +5,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OpsBridge.Domain;
+using OpsBridge.Infrastructure.Messaging;
 using OpsBridge.Infrastructure.Persistence;
 using OpsBridge.Infrastructure.Security;
+using RabbitMQ.Client;
 using Testcontainers.PostgreSql;
 using Testcontainers.RabbitMq;
 
@@ -90,6 +92,18 @@ public sealed class OpsBridgeFixture : IAsyncLifetime
 
     public async Task ResetAsync()
     {
+        // The xUnit collection shares one RabbitMQ container across tests.
+        // Resetting PostgreSQL without its queues can make BasicGet consume a
+        // delivery from a previous drill, producing a false pass or failure.
+        var connectionFactory = new ConnectionFactory { Uri = new Uri(RabbitMqConnectionString) };
+        await using (var connection = await connectionFactory.CreateConnectionAsync())
+        await using (var channel = await connection.CreateChannelAsync())
+        {
+            await RabbitMqTopology.InitializeTopologyAsync(channel);
+            await channel.QueuePurgeAsync(RabbitMqTopology.InboundQueue);
+            await channel.QueuePurgeAsync(RabbitMqTopology.DlqQueue);
+        }
+
         using var scope = Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<OpsBridgeDbContext>();
         db.AuditEvents.RemoveRange(db.AuditEvents);

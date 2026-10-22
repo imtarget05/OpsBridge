@@ -1,5 +1,11 @@
 # Business Impact — FlashSale Backend (High-Concurrency Order Reliability)
 
+> **Current correction (2026-10-21):** The older CI harness checked stock
+> conservation only and could falsely pass an underfilled sale after dry-run
+> resync. The working-tree fix requires exact 10/40 fill and a verified Redis
+> reset; one disposable local run passed. Remote CI has not rerun. See
+> [the current audit](evidence/portfolio-audit-2026-10-21.md).
+
 Domain facts: .NET 10 Clean Architecture; Redis Lua CAS gatekeeper + PG atomic
 conditional UPDATE (authoritative truth) + RabbitMQ at-least-once buffer +
 idempotency keys; pool cap 80/100. See `README.md`, `docs/benchmarks/`,
@@ -38,7 +44,7 @@ No currency figure in this file is measured.
 
 ```bash
 cd FlashSale-Backend
-python3 load-tests/concurrency/oversell_demo.py   # expect RESULT: PASS (same as CI)
+python3 load-tests/concurrency/oversell_demo.py --ops-token "$OPS_TOKEN"  # requires a local STAFF token and PG/Redis/API
 dotnet test tests/UnitTests/FlashSale.UnitTests.csproj -c Release        # 148 tests
 dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj -c Release  # 60 tests (needs PG/Redis/RMQ)
 ```

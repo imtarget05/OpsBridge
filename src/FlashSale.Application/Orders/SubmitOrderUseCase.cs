@@ -170,33 +170,64 @@ public sealed class SubmitOrderUseCase(
 
     /// <summary>
     /// Compensate a committed inventory.reserved event when the order could not
-    /// be accepted after all. Best effort: a failure here is logged, never
-    /// thrown — the caller must still get its SystemBusy answer.
+    /// be accepted after all. Bounded retry and critical alert logging:
+    /// failures are retried, then logged with structured alert tags without throwing —
+    /// the caller still receives its SystemBusy answer.
     /// </summary>
-    private async Task CompensateReservationAsync(
+    private async Task<bool> CompensateReservationAsync(
         int productId,
         int quantity,
         string idempotencyKey,
         Guid correlationId,
         CancellationToken ct)
     {
-        try
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            await transaction.BeginAsync(ct);
-            await outboxWriter.EnqueueAsync(
-                new InventoryReleasedEvent(
-                    Guid.NewGuid().ToString("D"), correlationId, "order-api",
-                    DateTimeOffset.UtcNow, 0, productId, quantity),
-                OutboxEventWriter.OrderAggregate,
-                idempotencyKey,
-                ct);
-            await transaction.CommitAsync(ct);
+            try
+            {
+                await transaction.BeginAsync(ct);
+                await outboxWriter.EnqueueAsync(
+                    new InventoryReleasedEvent(
+                        Guid.NewGuid().ToString("D"), correlationId, "order-api",
+                        DateTimeOffset.UtcNow, 0, productId, quantity),
+                    OutboxEventWriter.OrderAggregate,
+                    idempotencyKey,
+                    ct);
+                await transaction.CommitAsync(ct);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync(ct);
+                if (attempt == maxAttempts)
+                {
+                    logger.LogCritical(ex,
+                        "CRITICAL: inventory.released compensation FAILED after {Attempts} attempts for key {Key}, Product {ProductId}, Quantity {Quantity}. Reconciliation alert triggered.",
+                        maxAttempts, idempotencyKey, productId, quantity);
+                }
+                else
+                {
+                    logger.LogWarning(ex,
+                        "inventory.released compensation attempt {Attempt}/{Max} failed for {Key}. Retrying...",
+                        attempt, maxAttempts, idempotencyKey);
+                }
+            }
         }
-        catch (Exception ex)
-        {
-            await transaction.RollbackAsync(ct);
-            logger.LogError(ex,
-                "inventory.released compensation could not be recorded for {Key}.", idempotencyKey);
-        }
+        return false;
+    }
+
+    /// <summary>
+    /// Idempotent reconciler repair for orphan reservations where Redis stock was
+    /// released but the compensation outbox write failed during transient DB outage.
+    /// </summary>
+    public async Task<bool> ReconcileOrphanReservationAsync(
+        int productId,
+        int quantity,
+        string idempotencyKey,
+        Guid correlationId,
+        CancellationToken ct)
+    {
+        return await CompensateReservationAsync(productId, quantity, idempotencyKey, correlationId, ct);
     }
 }

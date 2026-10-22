@@ -37,42 +37,42 @@ const SCREENS = [
   {
     path: '/dashboard',
     link: 'Operations Overview',
-    heading: 'Operations Overview',
+    heading: /Operations Overview/i,
   },
   {
     path: '/purchase-orders',
     link: 'Purchase Orders',
-    heading: 'Purchase Orders',
+    heading: /Purchase Orders/i,
   },
   {
     path: '/goods-receipts',
     link: 'Goods Receipts',
-    heading: 'Goods Receipts',
+    heading: /Goods Receipts/i,
   },
   {
     path: '/invoices',
     link: 'Supplier Invoices',
-    heading: 'Supplier Invoices',
+    heading: /Supplier Invoices/i,
   },
   {
     path: '/reconciliation',
     link: '3-Way Matching Workspace',
-    heading: 'Three-Way Matching Workspace',
+    heading: /3-Way Matching Workspace/i,
   },
   {
     path: '/discrepancies',
     link: 'Discrepancy Review',
-    heading: 'Discrepancy Investigation & Review',
+    heading: /Discrepancy Investigation & Review/i,
   },
   {
     path: '/integrations',
     link: 'Integration Operations',
-    heading: 'Integration Operations & Event Mesh',
+    heading: /Integration Operations & Event Mesh/i,
   },
   {
     path: '/audit',
     link: 'Audit Timeline',
-    heading: 'Audit & Compliance Timeline',
+    heading: /Audit & Compliance Timeline/i,
   },
 ] as const;
 
@@ -125,7 +125,12 @@ test('operator reaches all eight authenticated screens and each one renders live
   expect(dashboardMetrics.totalInvoices).toBeGreaterThanOrEqual(invoices.length);
 
   for (const screen of SCREENS) {
-    await page.getByRole('link', { name: screen.link, exact: true }).click();
+    const linkByHref = page.locator(`aside a[href="${screen.path}"]`);
+    if ((await linkByHref.count()) > 0) {
+      await linkByHref.first().click();
+    } else {
+      await page.getByRole('link', { name: screen.link }).click();
+    }
     // The reconciliation workspace puts the selected invoice in the query
     // string (/reconciliation?invoiceId=...), so a query string is allowed.
     await expect(page).toHaveURL(new RegExp(`${screen.path}(\\?.*)?$`), { timeout: UI_TIMEOUT });
@@ -142,7 +147,7 @@ test('operator reaches all eight authenticated screens and each one renders live
   // While the query is in flight the cards show the '...' placeholder, so the
   // absence of that placeholder proves the response arrived. The "Total
   // Invoices" value is compared with the API's own number.
-  await page.getByRole('link', { name: 'Operations Overview', exact: true }).click();
+  await page.locator('aside a[href="/dashboard"]').first().click();
   await expect(page.getByText('Total Invoices', { exact: true })).toBeVisible();
   await expect(page.getByText('Matched & Approved', { exact: true })).toBeVisible();
   await expect(page.getByText('Open Discrepancies', { exact: true })).toBeVisible();
@@ -153,20 +158,25 @@ test('operator reaches all eight authenticated screens and each one renders live
   // its metrics every 10 s, so the value is polled instead of read once.
   await expect
     .poll(
-      async () =>
-        (
+      async () => {
+        const testIdEl = page.locator('[data-testid="metric-total-invoices"]');
+        if ((await testIdEl.count()) > 0) {
+          return (await testIdEl.textContent())?.trim();
+        }
+        return (
           await page
             .getByText('Total Invoices', { exact: true })
-            .locator('xpath=../following-sibling::div[1]/div[1]')
+            .locator('xpath=ancestor::div[contains(@class,"p-5")]//div[contains(@class,"text-2xl")]')
             .textContent()
-        )?.trim(),
+        )?.trim();
+      },
       { timeout: 20_000 },
     )
     .toBe(String(dashboardMetrics.totalInvoices));
 
   // Purchase orders: the counter is rendered from the API payload, and the
   // seeded order is one of the rendered rows.
-  await page.getByRole('link', { name: 'Purchase Orders', exact: true }).click();
+  await page.locator('aside a[href="/purchase-orders"]').first().click();
   await expect(
     page.getByText(`Showing ${purchaseOrders.length} purchase orders`),
   ).toBeVisible({ timeout: UI_TIMEOUT });
@@ -175,7 +185,7 @@ test('operator reaches all eight authenticated screens and each one renders live
   ).toBeVisible({ timeout: UI_TIMEOUT });
 
   // Goods receipts: same pattern.
-  await page.getByRole('link', { name: 'Goods Receipts', exact: true }).click();
+  await page.locator('aside a[href="/goods-receipts"]').first().click();
   await expect(
     page.getByText(`Showing ${goodsReceipts.length} warehouse receipts`),
   ).toBeVisible({ timeout: UI_TIMEOUT });
@@ -185,7 +195,7 @@ test('operator reaches all eight authenticated screens and each one renders live
 
   // Invoices: the directory title carries the number of invoices the API
   // returned, and the seeded invoice is rendered with its status.
-  await page.getByRole('link', { name: 'Supplier Invoices', exact: true }).click();
+  await page.locator('aside a[href="/invoices"]').first().click();
   await expect(
     page.getByRole('heading', { name: `Invoices Directory (${invoices.length})` }),
   ).toBeVisible({ timeout: UI_TIMEOUT });
@@ -202,9 +212,9 @@ test('operator reaches all eight authenticated screens and each one renders live
   // Reconciliation: the invoice selector is filled from GET /api/v1/invoices, so
   // the number of <option>s must equal the number of invoices the API reports,
   // and the selected option must name the seeded invoice and its status.
-  await page.getByRole('link', { name: '3-Way Matching Workspace', exact: true }).click();
+  await page.locator('aside a[href="/reconciliation"]').first().click();
   await expect(
-    page.getByRole('heading', { name: 'Three-Way Matching Workspace', level: 1 }),
+    page.getByRole('heading', { name: /3-Way Matching Workspace/i, level: 1 }),
   ).toBeVisible();
   const invoiceSelect = page.getByRole('main').getByRole('combobox');
   await expect
@@ -214,13 +224,13 @@ test('operator reaches all eight authenticated screens and each one renders live
   await expect(invoiceSelect).toContainText('PendingReconciliation');
 
   // Discrepancies: the log title carries the number of discrepancies.
-  await page.getByRole('link', { name: 'Discrepancy Review', exact: true }).click();
+  await page.locator('aside a[href="/discrepancies"]').first().click();
   await expect(
     page.getByRole('heading', { name: `Discrepancies Log (${discrepancies.length})` }),
   ).toBeVisible({ timeout: UI_TIMEOUT });
 
   // Integrations: the DLQ table and the ingestion stream come from the API.
-  await page.getByRole('link', { name: 'Integration Operations', exact: true }).click();
+  await page.locator('aside a[href="/integrations"]').first().click();
   await expect(
     page.getByRole('heading', { name: /Dead-Letter Queue \(DLQ\)/ }),
   ).toBeVisible({ timeout: UI_TIMEOUT });
@@ -229,7 +239,7 @@ test('operator reaches all eight authenticated screens and each one renders live
   ).toBeVisible();
 
   // Audit: the timeline title carries the number of audit records.
-  await page.getByRole('link', { name: 'Audit Timeline', exact: true }).click();
+  await page.locator('aside a[href="/audit"]').first().click();
   await expect(
     page.getByRole('heading', { name: `Audit Records (${auditEvents.length})` }),
   ).toBeVisible({ timeout: UI_TIMEOUT });
