@@ -9,6 +9,7 @@ import { Select } from '../../components/ui/Select';
 import { StatusBadge, DiscrepancySeverityBadge } from '../../components/ui/Badge';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import type { ReconciliationResult } from '../../types';
+import { useAuth } from '../auth/AuthContext';
 import {
   GitCompare,
   Play,
@@ -20,9 +21,12 @@ import {
   Truck,
   Receipt,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 
 export function MatchingWorkspacePage() {
+  const { user } = useAuth();
+  const canExecute = user?.role === 'Operator' || user?.role === 'Admin' || user?.role === 'FinanceReviewer';
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -124,14 +128,25 @@ export function MatchingWorkspacePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {!canExecute && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-800">
+              <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>Chỉ đọc ({user?.role || 'Auditor'}): Không có quyền chạy đối soát</span>
+            </div>
+          )}
           <Button
             variant="primary"
             size="sm"
             onClick={handleRunReconciliation}
-            disabled={!selectedInvoice || runMutation.isPending}
-            className="flex items-center gap-1.5 shadow-sm bg-blue-600 hover:bg-blue-700 text-white font-medium"
+            disabled={!selectedInvoice || runMutation.isPending || !canExecute}
+            title={!canExecute ? `Quyền ${user?.role || 'Auditor'} chỉ đọc` : undefined}
+            className={`flex items-center gap-1.5 shadow-sm font-medium ${
+              !canExecute
+                ? 'bg-slate-200 text-slate-400 cursor-not-allowed hover:bg-slate-200 border-slate-300'
+                : 'bg-blue-600 hover:bg-blue-700 text-white'
+            }`}
           >
-            <Play className="w-4 h-4 fill-white" />
+            <Play className={`w-4 h-4 ${!canExecute ? 'fill-slate-400 text-slate-400' : 'fill-white text-white'}`} />
             <span>{runMutation.isPending ? 'Đang đối soát...' : 'Thực Thi Đối Soát 3 Bên (Execute 3-Way Match)'}</span>
           </Button>
         </div>
@@ -173,27 +188,29 @@ export function MatchingWorkspacePage() {
             </div>
 
             {selectedInvoice && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-slate-50 rounded-lg text-xs">
-                <div>
-                  <span className="text-slate-500 block">Status:</span>
-                  <StatusBadge status={selectedInvoice.status} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 p-3.5 bg-slate-50 border border-slate-200/80 rounded-lg text-xs">
+                <div className="min-w-0 flex flex-col justify-between">
+                  <span className="text-slate-500 block mb-1">Trạng thái:</span>
+                  <div>
+                    <StatusBadge status={selectedInvoice.status} />
+                  </div>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Supplier:</span>
-                  <span className="font-semibold text-slate-900 truncate block">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Nhà cung cấp:</span>
+                  <span className="font-semibold text-slate-900 truncate block" title={selectedInvoice.supplierName}>
                     {selectedInvoice.supplierName}
                   </span>
-                  <span className="font-mono text-slate-400">{selectedInvoice.supplierCode}</span>
+                  <span className="font-mono text-slate-400 text-[11px]">{selectedInvoice.supplierCode}</span>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">PO Reference:</span>
-                  <span className="font-mono font-semibold text-blue-600">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Đơn mua (PO Ref):</span>
+                  <span className="font-mono font-semibold text-blue-600 block truncate">
                     {selectedInvoice.purchaseOrderNumber}
                   </span>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Total Amount:</span>
-                  <span className="font-mono font-bold text-slate-900">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block mb-1">Tổng tiền hóa đơn:</span>
+                  <span className="font-mono font-bold text-slate-900 block truncate">
                     {formatCurrency(selectedInvoice.totalAmount, selectedInvoice.currency)}
                   </span>
                 </div>

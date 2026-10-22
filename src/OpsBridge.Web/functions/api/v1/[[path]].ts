@@ -22,7 +22,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     });
   }
 
-  // 2. Proxy to live Azure container/AKS backend if configured and reachable
+  // 2. Proxy to live Azure container/AKS backend if configured
   if (context.env.API_BACKEND_URL && !context.env.API_BACKEND_URL.includes("127.0.0.1")) {
     const subPath = url.pathname.replace(/^\/api\/v1/, "");
     const target = `${context.env.API_BACKEND_URL.replace(/\/$/, "")}/api/v1${subPath}${url.search}`;
@@ -32,11 +32,28 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         headers: context.request.headers,
         body: ["GET", "HEAD"].includes(context.request.method) ? undefined : context.request.body,
       });
-      if (resp.ok || (resp.status < 500 && resp.status !== 404)) {
-        return resp;
+      // Do NOT swallow real backend 404/5xx errors into fake mock data
+      return resp;
+    } catch (err: any) {
+      // If live backend is explicitly configured but unreachable, fail with 503 unless explicit demo mode requested
+      const isExplicitDemo = context.env.DEMO_MODE === "true" || url.searchParams.get("demo") === "true";
+      if (!isExplicitDemo) {
+        return new Response(
+          JSON.stringify({
+            error: "UpstreamBackendUnavailable",
+            message: `Không thể kết nối tới backend tại ${context.env.API_BACKEND_URL}. Dịch vụ tạm thời không khả dụng.`,
+            detail: String(err?.message || err),
+          }),
+          {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": url.origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
       }
-    } catch {
-      // Fall through to resilient enterprise telemetry provider below
     }
   }
 
@@ -45,6 +62,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": url.origin,
     "Access-Control-Allow-Credentials": "true",
+    "X-OpsBridge-Sandbox": "true",
+    "X-OpsBridge-Mode": "sandbox",
   };
 
   // ==========================================

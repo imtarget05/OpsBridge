@@ -19,8 +19,6 @@ interface Message {
   isFallback?: boolean;
 }
 
-const DEFAULT_API_KEY = 'AIzaSyCd3WrR0YwDiwcwDki-KieIOoYUTcflCKA';
-
 const INITIAL_MESSAGES: Message[] = [
   {
     id: 'welcome-1',
@@ -33,7 +31,7 @@ const INITIAL_MESSAGES: Message[] = [
 export function OpsCopilotWidget() {
   const [isOpen, setIsOpen] = useState(false);
   const [apiKey, setApiKey] = useState(() => {
-    return localStorage.getItem('opsbridge_gemini_key') || DEFAULT_API_KEY;
+    return localStorage.getItem('opsbridge_gemini_key') || '';
   });
   const [showSettings, setShowSettings] = useState(false);
   const [input, setInput] = useState('');
@@ -75,14 +73,14 @@ Nếu khớp 100% hoặc trong biên độ dung sai (Tolerance), hóa đơn sẽ
 
     if (q.includes('8803') || q.includes('sai lệch') || q.includes('chênh lệch') || q.includes('lệch')) {
       return `🔍 **Phân tích Hóa đơn INV-2026-8803:**
-- **Nhà cung cấp:** Công Ty TNHH Trân Châu & Topping Đài Loan.
-- **Mã sản phẩm:** Trân Châu Đen Hoàng Gia 20kg (SKU-BOBA-BLACK-20K).
+- **Nhà cung cấp:** Công ty TNHH Nguyên Liệu Trân Châu Đài Loan (SUP-TAIWAN-BOBA).
+- **Mã sản phẩm:** Trân Châu Đen Dẻo Cao Cấp (Bao 20kg) (SKU-BOBA-BLACK-20K).
 - **Thực tế:** 
-  + Hóa đơn NCC yêu cầu thanh toán: **100 bao**.
-  + Thực tế thủ kho kiểm đếm nhận được: **80 bao** (thiếu 20 bao do lỗi vận chuyển).
-- **Sai lệch (Discrepancy):** Chênh lệch **20 bao**, tương đương giá trị vênh **13.200.000 VNĐ**.
+  + Hóa đơn NCC yêu cầu thanh toán: **200 bao** (thành tiền 60.000.000 VNĐ).
+  + Thực tế thủ kho kiểm đếm nhận được (GR): **160 bao** (thành tiền 48.000.000 VNĐ).
+- **Sai lệch (Discrepancy):** Chênh lệch thiếu **40 bao**, tương đương giá trị vênh **12.000.000 VNĐ** (chưa VAT) / **13.200.000 VNĐ** (đã gồm 10% VAT).
 - **Khuyến nghị xử lý:**
-  👉 Nhân viên kế toán nên chọn hành động **Rejected (Từ chối)** hoặc **Adjusted (Yêu cầu NCC phát hành lại hóa đơn cho 80 bao thực nhận)** thay vì thanh toán toàn bộ!`;
+  👉 Nhân viên kế toán nên chọn hành động **Từ chối (Rejected)** hoặc **Duyệt theo thực tế nhận (ApprovedWithVariance / Adjusted)** cho 160 bao, yêu cầu NCC phát hành hóa đơn điều chỉnh giảm 40 bao thiếu!`;
     }
 
     if (q.includes('dung sai') || q.includes('tolerance')) {
@@ -123,8 +121,27 @@ Trong hệ thống OpsBridge, mọi giao dịch mua hàng đều được bảo 
     setInput('');
     setLoading(true);
 
+    // If no custom key is provided, execute deterministic offline expert heuristics directly
+    if (!apiKey) {
+      setTimeout(() => {
+        const reply = getHeuristicResponse(question);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: 'ai-' + Date.now(),
+            sender: 'ai',
+            text: reply,
+            timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+            isFallback: false,
+          },
+        ]);
+        setLoading(false);
+      }, 350);
+      return;
+    }
+
     try {
-      // Attempt live Gemini 2.5 call
+      // Attempt live Gemini call if user configured their own custom key
       const prompt = `Bạn là Trợ lý AI Chuyên gia Vận hành Kho & Kế toán Tài chính của hệ thống OpsBridge (Three-Way Matching Reliability Platform).
 Nhiệm vụ của bạn là giải thích quy trình đối soát 3 bên (Đơn mua PO, Phiếu nhập kho GR, Hóa đơn NCC INV), giải thích các lỗi sai lệch số lượng/đơn giá (QuantityMismatch, PriceMismatch), hướng dẫn người dùng sử dụng trang web một cách thân thiện, súc tích và dễ hiểu bằng tiếng Việt.
 Câu hỏi của người dùng: "${question}"`;
@@ -214,7 +231,7 @@ Câu hỏi của người dùng: "${question}"`;
                 <h3 className="font-bold text-xs flex items-center gap-1.5">
                   <span>OpsBridge AI Copilot</span>
                   <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-normal border border-emerald-400/30">
-                    Gemini Live
+                    {apiKey ? 'Gemini Live' : 'Offline Rule Engine'}
                   </span>
                 </h3>
                 <p className="text-[10px] text-slate-300">Chuyên gia đối soát kho & hóa đơn</p>
@@ -252,7 +269,7 @@ Câu hỏi của người dùng: "${question}"`;
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Nhập Gemini API Key (AIzaSy...)"
+                placeholder="Nhập Gemini API Key (AIza...)"
                 className="text-xs font-mono"
               />
               <div className="p-2 bg-amber-50 rounded border border-amber-200 text-[11px] text-amber-800 space-y-1">

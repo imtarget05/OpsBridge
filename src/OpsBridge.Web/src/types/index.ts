@@ -113,7 +113,7 @@ export type DiscrepancyType =
   | 'UomConversionError';
 
 export type DiscrepancySeverity = 'Warning' | 'Error';
-export type DiscrepancyStatus = 'Open' | 'UnderReview' | 'Resolved' | 'Rejected';
+export type DiscrepancyStatus = 'Open' | 'UnderReview' | 'Resolved' | 'Rejected' | 'ApprovedWithVariance';
 export type ReviewAction = 'ApprovedWithTolerance' | 'Adjusted' | 'Rejected' | 'HoldForInvestigation';
 
 export interface ReviewDecision {
