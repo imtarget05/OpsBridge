@@ -26,11 +26,32 @@ internal sealed class FakeCheckoutSagaRepository : ICheckoutSagaRepository
 
     public Task SaveAsync(CheckoutSagaState saga, CancellationToken ct = default)
     {
-        _bySagaId[saga.SagaId] = saga;
-        _byKey[saga.IdempotencyKey] = saga;
-        if (saga.OrderId > 0)
+        if (_bySagaId.TryGetValue(saga.SagaId, out var existing))
         {
-            _byOrderId[saga.OrderId] = saga;
+            if (existing.Version != saga.Version)
+            {
+                throw new Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException(
+                    $"Optimistic concurrency violation: CheckoutSaga {saga.SagaId} presented version {saga.Version} but repository version is {existing.Version}.");
+            }
+
+            existing.OrderId = saga.OrderId;
+            existing.Status = saga.Status;
+            existing.InventoryStatus = saga.InventoryStatus;
+            existing.PaymentStatus = saga.PaymentStatus;
+            existing.FailureReason = saga.FailureReason;
+            existing.CompensationReason = saga.CompensationReason;
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+            existing.Version++;
+            saga.Version = existing.Version;
+        }
+        else
+        {
+            _bySagaId[saga.SagaId] = saga;
+            _byKey[saga.IdempotencyKey] = saga;
+            if (saga.OrderId > 0)
+            {
+                _byOrderId[saga.OrderId] = saga;
+            }
         }
         return Task.CompletedTask;
     }
