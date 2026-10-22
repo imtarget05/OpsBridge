@@ -16,9 +16,9 @@ const navItems = [
   { to: '/purchase-orders', labelVi: 'Đơn mua hàng (PO)', labelEn: 'Purchase Orders', icon: FileText },
   { to: '/goods-receipts', labelVi: 'Phiếu nhập kho (GR)', labelEn: 'Goods Receipts', icon: PackageCheck },
   { to: '/invoices', labelVi: 'Hóa đơn NCC (INV)', labelEn: 'Supplier Invoices', icon: Receipt },
-  { to: '/reconciliation', labelVi: 'Đối soát 3 bên', labelEn: '3-Way Matching', icon: GitCompare },
+  { to: '/reconciliation', labelVi: 'Đối soát 3 bên', labelEn: '3-Way Matching Workspace', icon: GitCompare },
   { to: '/discrepancies', labelVi: 'Xử lý sai lệch', labelEn: 'Discrepancy Review', icon: AlertTriangle },
-  { to: '/integrations', labelVi: 'Tích hợp hệ thống', labelEn: 'Integration Ops', icon: Network },
+  { to: '/integrations', labelVi: 'Tích hợp hệ thống', labelEn: 'Integration Operations', icon: Network },
   { to: '/audit', labelVi: 'Nhật ký kiểm toán', labelEn: 'Audit Timeline', icon: History },
 ];
 
@@ -35,6 +35,8 @@ export function Sidebar() {
             <NavLink
               key={item.to}
               to={item.to}
+              aria-label={item.labelEn}
+              data-testid={`nav-${item.to.replace('/', '')}`}
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors',
