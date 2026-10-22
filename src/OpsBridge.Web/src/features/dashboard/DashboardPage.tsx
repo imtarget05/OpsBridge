@@ -201,7 +201,7 @@ export function DashboardPage() {
               </div>
             </div>
             <div className="mt-3">
-              <div className="text-2xl font-bold text-slate-900">
+              <div className="text-2xl font-bold text-slate-900" data-testid="metric-total-invoices">
                 {loadingMetrics ? '...' : metrics?.totalInvoices ?? 0}
               </div>
               <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">

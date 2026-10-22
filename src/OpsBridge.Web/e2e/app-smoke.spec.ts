@@ -158,13 +158,18 @@ test('operator reaches all eight authenticated screens and each one renders live
   // its metrics every 10 s, so the value is polled instead of read once.
   await expect
     .poll(
-      async () =>
-        (
+      async () => {
+        const testIdEl = page.locator('[data-testid="metric-total-invoices"]');
+        if ((await testIdEl.count()) > 0) {
+          return (await testIdEl.textContent())?.trim();
+        }
+        return (
           await page
             .getByText('Total Invoices', { exact: true })
-            .locator('xpath=../following-sibling::div[1]/div[1]')
+            .locator('xpath=ancestor::div[contains(@class,"p-5")]//div[contains(@class,"text-2xl")]')
             .textContent()
-        )?.trim(),
+        )?.trim();
+      },
       { timeout: 20_000 },
     )
     .toBe(String(dashboardMetrics.totalInvoices));
