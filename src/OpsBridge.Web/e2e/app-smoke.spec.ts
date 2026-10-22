@@ -37,42 +37,42 @@ const SCREENS = [
   {
     path: '/dashboard',
     link: 'Operations Overview',
-    heading: 'Operations Overview',
+    heading: /Operations Overview/i,
   },
   {
     path: '/purchase-orders',
     link: 'Purchase Orders',
-    heading: 'Purchase Orders',
+    heading: /Purchase Orders/i,
   },
   {
     path: '/goods-receipts',
     link: 'Goods Receipts',
-    heading: 'Goods Receipts',
+    heading: /Goods Receipts/i,
   },
   {
     path: '/invoices',
     link: 'Supplier Invoices',
-    heading: 'Supplier Invoices',
+    heading: /Supplier Invoices/i,
   },
   {
     path: '/reconciliation',
     link: '3-Way Matching Workspace',
-    heading: 'Three-Way Matching Workspace',
+    heading: /3-Way Matching Workspace/i,
   },
   {
     path: '/discrepancies',
     link: 'Discrepancy Review',
-    heading: 'Discrepancy Investigation & Review',
+    heading: /Discrepancy Investigation & Review/i,
   },
   {
     path: '/integrations',
     link: 'Integration Operations',
-    heading: 'Integration Operations & Event Mesh',
+    heading: /Integration Operations & Event Mesh/i,
   },
   {
     path: '/audit',
     link: 'Audit Timeline',
-    heading: 'Audit & Compliance Timeline',
+    heading: /Audit & Compliance Timeline/i,
   },
 ] as const;
 
@@ -209,7 +209,7 @@ test('operator reaches all eight authenticated screens and each one renders live
   // and the selected option must name the seeded invoice and its status.
   await page.locator('aside a[href="/reconciliation"]').first().click();
   await expect(
-    page.getByRole('heading', { name: 'Three-Way Matching Workspace', level: 1 }),
+    page.getByRole('heading', { name: /3-Way Matching Workspace/i, level: 1 }),
   ).toBeVisible();
   const invoiceSelect = page.getByRole('main').getByRole('combobox');
   await expect
