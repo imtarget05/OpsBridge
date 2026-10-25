@@ -5,7 +5,12 @@ namespace: flashsale
 
 resources:
   - ../../base
+  # The schema Job is run and awaited separately before this Deployment rolls.
+  - ../../base/opsbridge-api
   - httproute.yaml
+
+patches:
+  - path: opsbridge-migration-exclude.yaml
 
 replicas:
   - name: order-api
@@ -23,6 +28,9 @@ images:
   - name: payment-service
     newName: acrflashsalep6.azurecr.io/payment-service
     newTag: e528d5a7503b4dd06a6646eb3f4b42ea23313d3e
+  - name: opsbridge-api
+    newName: acrflashsalep6.azurecr.io/opsbridge-api
+    newTag: 3e7fb0d30dd2a5caffd3a7b9c73ec24367e11bf0
 
 labels:
   - pairs:

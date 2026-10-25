@@ -38,7 +38,7 @@ spec:
             type: PathPrefix
             value: /flashsale/api
     - backendRefs:
-        - name: order-api
+        - name: opsbridge-api
           port: 80
       filters:
         - type: URLRewrite
@@ -50,6 +50,19 @@ spec:
         - path:
             type: PathPrefix
             value: /opsbridge/api
+    - backendRefs:
+        - name: opsbridge-api
+          port: 80
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /healthz
+      matches:
+        - path:
+            type: PathPrefix
+            value: /opsbridge/healthz
     - backendRefs:
         - name: order-api
           port: 80

@@ -1,0 +1,7 @@
+# Run and await this Job explicitly before syncing the API Deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opsbridge-migrate
+  namespace: opsbridge
+$patch: delete

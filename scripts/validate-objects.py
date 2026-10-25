@@ -37,7 +37,9 @@ SECRET_CONTRACT = {
         "pg-connection", "pg-password", "redis-connection",
         "rabbitmq-connection", "rabbitmq-password", "jwt-signing-key",
         "agent-recovery-hmac-key",
-    }
+    },
+    "opsbridge-secrets": {"pg-connection", "rabbitmq-connection", "jwt-signing-key"},
+    "opsbridge-migrate-secrets": {"pg-migration-connection"},
 }
 
 
