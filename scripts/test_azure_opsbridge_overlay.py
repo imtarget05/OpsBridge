@@ -45,6 +45,12 @@ class AzureOpsBridgeOverlayTests(unittest.TestCase):
             health_rule["filters"][0]["urlRewrite"]["path"]["replacePrefixMatch"],
             "/healthz",
         )
+        self.assertEqual(paths["/opsbridge/health/messaging"][0], "opsbridge-api")
+        messaging_rule = paths["/opsbridge/health/messaging"][1]
+        self.assertEqual(
+            messaging_rule["filters"][0]["urlRewrite"]["path"]["replacePrefixMatch"],
+            "/health/messaging",
+        )
 
 
 if __name__ == "__main__":
