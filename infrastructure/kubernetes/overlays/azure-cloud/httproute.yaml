@@ -64,6 +64,19 @@ spec:
             type: PathPrefix
             value: /opsbridge/healthz
     - backendRefs:
+        - name: opsbridge-api
+          port: 80
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /health/messaging
+      matches:
+        - path:
+            type: PathPrefix
+            value: /opsbridge/health/messaging
+    - backendRefs:
         - name: order-api
           port: 80
       matches:
