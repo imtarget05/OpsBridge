@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OpsBridge.Domain.InboxOutbox;
@@ -85,7 +84,7 @@ public class OutboxEndpointsTests(OpsBridgeFixture fixture)
         Assert.DoesNotContain("Broker connection refused.", responseBody, StringComparison.Ordinal);
         Assert.DoesNotContain("receiptNumber", responseBody, StringComparison.Ordinal);
 
-        var getJson = await getResponse.Content.ReadFromJsonAsync<StuckOutboxResponse>();
+        var getJson = await getResponse.Content.ReadOpsBridgeJsonAsync<StuckOutboxResponse>();
         Assert.NotNull(getJson);
         Assert.Equal(1, getJson!.Count);
 
@@ -93,14 +92,14 @@ public class OutboxEndpointsTests(OpsBridgeFixture fixture)
         var requeueResponse = await client.PostAsync("/api/v1/outbox/requeue", null);
         Assert.Equal(HttpStatusCode.OK, requeueResponse.StatusCode);
 
-        var requeueJson = await requeueResponse.Content.ReadFromJsonAsync<RequeueResponse>();
+        var requeueJson = await requeueResponse.Content.ReadOpsBridgeJsonAsync<RequeueResponse>();
         Assert.NotNull(requeueJson);
         Assert.Equal("requeued", requeueJson!.Status);
         Assert.Equal(1, requeueJson.Count);
 
         // 3. Verify in DB and via GET that they are no longer stuck
         var verifyResponse = await client.GetAsync("/api/v1/outbox/stuck");
-        var verifyJson = await verifyResponse.Content.ReadFromJsonAsync<StuckOutboxResponse>();
+        var verifyJson = await verifyResponse.Content.ReadOpsBridgeJsonAsync<StuckOutboxResponse>();
         Assert.NotNull(verifyJson);
         Assert.Equal(0, verifyJson!.Count);
 
