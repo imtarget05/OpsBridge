@@ -162,6 +162,8 @@ public partial class EndpointAuthorizationGuardTests
     [InlineData("GET /internal/metrics")]
     [InlineData("GET /internal/automation/summary")]
     [InlineData("GET /internal/automation/alerts")]
+    [InlineData("GET /internal/automation/stuck-orders")]
+    [InlineData("POST /internal/automation/stuck-order-scan")]
     [InlineData("GET /api/orders/{idempotencyKey}")]
     [InlineData("GET /api/saga/{idempotencyKey}")]
     public void PreviouslyOpenRoute_IsNowAuthorized(string display)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -19,8 +20,7 @@ public static class ConnectorEndpoints
         group.MapGet("/", async (IConnectorRepository repo, CancellationToken ct) =>
         {
             var connectors = await repo.GetAllAsync(ct);
-            var cloudBaseUrl = Environment.GetEnvironmentVariable("FACTORYFLOW_BASE_URL")
-                ?? "https://factoryflow.opsbridge.cloud/api";
+            var cloudBaseUrl = Environment.GetEnvironmentVariable("FACTORYFLOW_BASE_URL");
 
             var result = connectors.Select(c => new
             {
@@ -33,7 +33,8 @@ public static class ConnectorEndpoints
                 c.UpdatedAt
             }).ToList();
 
-            if (!result.Any(c => c.Name.Contains("FactoryFlow", StringComparison.OrdinalIgnoreCase)))
+            if (!string.IsNullOrWhiteSpace(cloudBaseUrl) &&
+                !result.Any(c => c.Name.Contains("FactoryFlow", StringComparison.OrdinalIgnoreCase)))
             {
                 result.Insert(0, new
                 {
@@ -52,21 +53,69 @@ public static class ConnectorEndpoints
         .RequireAuthorization(OpsBridgeAuthPolicies.AuditorOrAbove)
         .WithName("ListConnectors");
 
-        group.MapPost("/{id}/ping", async (string id, IConnectorRepository repo, CancellationToken ct) =>
+        group.MapPost("/{id}/ping", async (string id, IConnectorRepository repo, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
-            var cloudBaseUrl = Environment.GetEnvironmentVariable("FACTORYFLOW_BASE_URL")
-                ?? "https://factoryflow.opsbridge.cloud/api";
-
-            return Results.Ok(new
+            if (id != "conn-factoryflow")
             {
-                success = true,
-                connectorId = id,
-                status = "Healthy",
-                latencyMs = 24,
-                message = "Kết nối thành công đến FactoryFlow Cloud Gateway (TLS 1.3)",
-                targetUrl = cloudBaseUrl,
-                checkedAt = DateTimeOffset.UtcNow
-            });
+                if (!Guid.TryParse(id, out var connectorId))
+                {
+                    return Results.BadRequest(new { message = "Invalid connector ID." });
+                }
+
+                var connector = await repo.GetByIdAsync(connectorId, ct);
+                if (connector == null)
+                {
+                    return Results.NotFound(new { message = "Connector not found." });
+                }
+
+                if (!connector.IsActive || connector.Type != ConnectorType.FactoryFlowRest)
+                {
+                    return Results.Conflict(new { message = "FactoryFlow REST connector is not active." });
+                }
+            }
+
+            // The database BaseUrl is editable by an operator. Never use it as an
+            // outbound request destination: the only target is deployment config.
+            var configuredBaseUrl = Environment.GetEnvironmentVariable("FACTORYFLOW_BASE_URL");
+            if (!Uri.TryCreate(configuredBaseUrl, UriKind.Absolute, out var target) ||
+                target.Scheme != Uri.UriSchemeHttps || target.Port != 443 ||
+                !string.IsNullOrEmpty(target.UserInfo) ||
+                !string.IsNullOrEmpty(target.Query) ||
+                !string.IsNullOrEmpty(target.Fragment))
+            {
+                return Results.Json(new { message = "FactoryFlow HTTPS URL is not configured." }, statusCode: 503);
+            }
+
+            using var httpClient = httpClientFactory.CreateClient("factoryflow-ping");
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                using var response = await httpClient.GetAsync(new Uri(target, $"{target.AbsolutePath.TrimEnd('/')}/health"), ct);
+                stopwatch.Stop();
+                if (!response.IsSuccessStatusCode)
+                {
+                    return Results.Json(new { message = $"Connector returned HTTP {(int)response.StatusCode}." }, statusCode: 502);
+                }
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    connectorId = id,
+                    latencyMs = (int)stopwatch.ElapsedMilliseconds,
+                    message = "Connector health endpoint responded successfully.",
+                    targetUrl = target.ToString(),
+                    checkedAt = DateTimeOffset.UtcNow
+                });
+            }
+            catch (HttpRequestException)
+            {
+                return Results.Json(new { message = "Connector could not be reached." }, statusCode: 502);
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return Results.Json(new { message = "Connector health check timed out." }, statusCode: 504);
+            }
         })
         .RequireAuthorization(OpsBridgeAuthPolicies.AuditorOrAbove)
         .WithName("PingConnector");

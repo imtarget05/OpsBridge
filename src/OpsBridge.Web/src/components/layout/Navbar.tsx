@@ -28,8 +28,7 @@ export function Navbar() {
       </div>
 
       <div className="flex items-center gap-4">
-        {/* Quick Role Switcher */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg border border-slate-200">
+        {import.meta.env.DEV && <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg border border-slate-200">
           <span className="text-xs font-semibold text-slate-500 pl-2 hidden md:inline flex items-center gap-1">
             <RefreshCw className="w-3 h-3" /> Role:
           </span>
@@ -44,7 +43,7 @@ export function Navbar() {
               </option>
             ))}
           </select>
-        </div>
+        </div>}
 
         {/* User Badge */}
         <div className="flex items-center gap-3 pl-2 border-l border-slate-200">

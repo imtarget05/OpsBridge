@@ -311,6 +311,35 @@ internal sealed class FakeOutboxRepository : IOutboxRepository
         }
         return Task.CompletedTask;
     }
+
+    public Task<IReadOnlyList<OutboxMessage>> GetStuckMessagesAsync(int limit = 50, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<OutboxMessage>>(_messages
+            .Where(m => m.ProcessedAt == null && m.Status == "Failed")
+            .OrderBy(m => m.CreatedAt)
+            .Take(limit)
+            .ToList());
+
+    public Task<int> RequeueStuckAsync(CancellationToken ct = default)
+    {
+        var stuck = _messages.Where(m => m.ProcessedAt == null && m.Status == "Failed").ToList();
+        foreach (var message in stuck)
+        {
+            message.Status = "Pending";
+            message.RetryCount = 0;
+            message.ErrorMessage = null;
+        }
+        return Task.FromResult(stuck.Count);
+    }
+
+    public Task<bool> RequeueMessageAsync(Guid id, CancellationToken ct = default)
+    {
+        var message = _messages.FirstOrDefault(m => m.Id == id && m.ProcessedAt == null && m.Status == "Failed");
+        if (message == null) return Task.FromResult(false);
+        message.Status = "Pending";
+        message.RetryCount = 0;
+        message.ErrorMessage = null;
+        return Task.FromResult(true);
+    }
 }
 
 internal sealed class FakeUnitOfWork : IUnitOfWork

@@ -21,6 +21,7 @@ using FlashSale.Infrastructure.Payment;
 using FlashSale.Infrastructure.Persistence;
 using FlashSale.Infrastructure.Redis;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -69,6 +70,16 @@ builder.Services.AddScoped<IAutomationRunRepository, AutomationRunRepository>();
 builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
 builder.Services.AddScoped<PaymentAutomationUseCase>();
 builder.Services.AddScoped<RecordPaymentUseCase>();
+
+// Accepted reservation -> order-row SLA: scoped to FlashSale's authoritative
+// order/outbox store (ADR-017). The scan does not inspect payment status.
+var stuckOrderOptions = builder.Configuration
+    .GetSection(StuckOrderOptions.SectionName).Get<StuckOrderOptions>()
+    ?? new StuckOrderOptions();
+builder.Services.AddSingleton(stuckOrderOptions);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IStuckOrderRepository, StuckOrderRepository>();
+builder.Services.AddScoped<StuckOrderScanUseCase>();
 
 // Checkout Saga Orchestration (Phases 9 & 11)
 builder.Services.AddScoped<ICheckoutSagaRepository, CheckoutSagaRepository>();
@@ -466,6 +477,22 @@ app.MapGet("/internal/automation/alerts", async (IStockAlertRepository alerts) =
     .WithTags("Ops")
     .WithName("OpenAlerts")
     .WithSummary("Open low-stock alerts (spec §6), newest first.");
+
+app.MapGet("/internal/automation/stuck-orders", async (
+    StuckOrderScanUseCase scan, CancellationToken ct) =>
+    Results.Ok(await scan.GetCurrentAsync(ct)))
+    .RequireAuthorization(new AuthorizeAttribute { Roles = AuthRoles.Admin })
+    .WithTags("Ops")
+    .WithName("StuckOrders")
+    .WithSummary("Accepted reservations older than the SLA with no persisted order or compensation.");
+
+app.MapPost("/internal/automation/stuck-order-scan", async (
+    StuckOrderScanUseCase scan, CancellationToken ct) =>
+    Results.Ok(await scan.ExecuteAsync(ct)))
+    .RequireAuthorization(new AuthorizeAttribute { Roles = AuthRoles.Admin })
+    .WithTags("Ops")
+    .WithName("StuckOrderScan")
+    .WithSummary("Raise one durable alert event per overdue accepted reservation.");
 
 
 

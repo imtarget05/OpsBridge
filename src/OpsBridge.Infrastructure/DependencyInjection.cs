@@ -1,13 +1,17 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpsBridge.Application.AI;
+using OpsBridge.Application.Common;
 using OpsBridge.Application.Connectors;
 using OpsBridge.Application.Contracts;
 using OpsBridge.Application.InboxOutbox;
 using OpsBridge.Application.Ingestion;
 using OpsBridge.Application.Messaging;
 using OpsBridge.Application.Security;
+using OpsBridge.Application.StuckOrder;
 using OpsBridge.Application.UseCases;
+using OpsBridge.Infrastructure.AI;
 using OpsBridge.Infrastructure.Connectors;
 using OpsBridge.Infrastructure.Contracts;
 using OpsBridge.Infrastructure.Messaging;
@@ -53,6 +57,14 @@ public static class DependencyInjection
         services.AddSingleton<IWebhookSignatureVerifier, HmacWebhookVerifier>();
         services.AddSingleton<IContractValidator, JsonContractValidator>();
 
+        // AI Providers (registered in priority order - first tried first)
+        services.AddHttpClient<GeminiAiProvider>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddSingleton<IAiProvider, GeminiAiProvider>();
+        services.AddSingleton<IAiProvider, FallbackAiProvider>();
+
         // The token ISSUER is bound to the SAME configured key, issuer and
         // audience the API validates tokens with (OpsBridgeJwtConfiguration is
         // the single reader of Jwt:SigningKey / Jwt:Issuer / Jwt:Audience, and
@@ -91,6 +103,8 @@ public static class DependencyInjection
         services.AddScoped<ReplayDeadLetterEventUseCase>();
         services.AddScoped<ReconcileInvoiceUseCase>();
         services.AddScoped<ReviewDiscrepancyUseCase>();
+        services.AddScoped<DetectStuckOrdersUseCase>();
+        services.AddScoped<AiChatUseCase>();
         services.AddSingleton<MessagingRuntimeStatus>();
 
         // Messaging is opt-in for local API tests, and mandatory for a workload

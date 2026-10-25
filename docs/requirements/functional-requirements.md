@@ -9,7 +9,7 @@
 | FR-C01 | Đặt hàng và reserve tồn kho nhất quán (no-oversell tại thời điểm đặt hàng) | Must | FlashSale Order/Inventory (ngoài OpsBridge) | concurrency-harness `oversell_demo.py` | PASS local (F2: stock 10→7, 0 oversell) |
 | FR-C02 | Ghi outbox event cùng transaction nghiệp vụ (webhook accepted dù broker down) | Must | `OutboxPublisherHostedService`, `EfOutboxRepository` | `FailureDrill1_RabbitMqDown_WebhookStillAcceptedAndStoredInOutbox` | PASS (F2) |
 | FR-C03 | Consumer xử lý event theo idempotency key (dedupe cùng eventId) | Must | `GoodsReceiptConsumerHost`, `IInboxRepository` | `FailureDrill4` / `OutboxPoisonTests` | PASS (F2) |
-| FR-C04 | Phát hiện đơn hàng kẹt fulfillment (stuck-order detection) | Must | (chưa implement theo form test) | — | GAP (không có test injected stuck-order) |
+| FR-C04 | Phát hiện đơn đã nhận nhưng kẹt trước khi worker tạo Order | Must | `StuckOrderScanUseCase`, `StuckOrderRepository`, `StuckOrderScanHostedService` | `StuckOrderScanTests`, `StuckOrderIntegrationTests` | PARTIAL: đã có mã và test thời gian giả lập; chưa chạy được test runtime trong sandbox và chưa có fault drill/UAT cloud trên SHA phát hành |
 | FR-C05 | AI tra cứu trạng thái đơn và đề xuất hướng xử lý | Should | AI Exception Assistant (ngoài OpsBridge core) | — | NOT_IMPLEMENTED (Could) |
 | FR-C06 | Nhân viên phê duyệt thao tác replay / compensation (discrepancy review) | Must | `ReviewDiscrepancyUseCase`, `ThreeWayMatchingEngine` | `E2E_DiscrepancyReview_Approve...`, `E2E_DiscrepancyReview_Reject...` | PASS (F2) |
 | FR-C07 | Dự báo nhu cầu theo SKU | Could | Forecast Service (ngoài OpsBridge) | — | NOT_IMPLEMENTED (Could) |

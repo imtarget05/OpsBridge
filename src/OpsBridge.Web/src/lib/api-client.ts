@@ -86,18 +86,12 @@ class ApiClient {
 
   // --- Auth ---
   async login(username: string, role?: UserRole): Promise<AuthResponse> {
+    if (!import.meta.env.DEV) {
+      throw new Error('Demo login is unavailable in production.');
+    }
     const res = await this.request<AuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, role }),
-    });
-    this.setToken(res.accessToken);
-    return res;
-  }
-
-  async loginWithGoogle(credential: string): Promise<AuthResponse> {
-    const res = await this.request<AuthResponse>('/auth/google', {
-      method: 'POST',
-      body: JSON.stringify({ credential }),
     });
     this.setToken(res.accessToken);
     return res;

@@ -41,6 +41,24 @@ public sealed record InventoryReservedEvent(
     public override object Payload => new { OrderId, ProductId, Quantity, IdempotencyKey };
 }
 
+/// <summary>
+/// The accepted reservation has not produced an Order within its configured
+/// queue-to-persistence deadline. The event identifies the reservation, so
+/// repeated scans never create a second alert for the same accepted attempt.
+/// </summary>
+public sealed record OrderFulfillmentStuckEvent(
+    string EventId,
+    Guid CorrelationId,
+    string Source,
+    DateTimeOffset OccurredAt,
+    string IdempotencyKey,
+    Guid ReservationEventId,
+    DateTimeOffset AcceptedAt,
+    int ThresholdMinutes) : DomainEvent(EventId, "order.fulfillment_stuck", OccurredAt, CorrelationId, Source)
+{
+    public override object Payload => new { IdempotencyKey, ReservationEventId, AcceptedAt, ThresholdMinutes };
+}
+
 /// <summary>Payment completed for an order (spec §4).</summary>
 public sealed record PaymentCompletedEvent(
     string EventId,

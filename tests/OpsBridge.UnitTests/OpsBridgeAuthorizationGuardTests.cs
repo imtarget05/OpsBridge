@@ -16,6 +16,7 @@ public partial class OpsBridgeAuthorizationGuardTests
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "AuthEndpoints.cs"),
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "ConnectorEndpoints.cs"),
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "IngestionEndpoints.cs"),
+        Path.Combine("src", "OpsBridge.Api", "Endpoints", "OutboxEndpoints.cs"),
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "ReconciliationEndpoints.cs"),
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "ReplayEndpoints.cs"),
         Path.Combine("src", "OpsBridge.Api", "Endpoints", "WebhookEndpoints.cs"),
@@ -51,6 +52,19 @@ public partial class OpsBridgeAuthorizationGuardTests
         var mapped = ReadRoutes().Select(r => r.Display).ToHashSet(StringComparer.Ordinal);
         var stale = PublicRoutes.Keys.Where(k => !mapped.Contains(k)).OrderBy(x => x, StringComparer.Ordinal).ToArray();
         Assert.True(stale.Length == 0, "Stale allowlist entries:\n  " + string.Join("\n  ", stale));
+    }
+
+    [Fact]
+    public void UnmigratedProcurementLagDraft_IsNotExposedAsAnApiRoute()
+    {
+        // The draft detector writes alert rows and has no accepted migration or
+        // concurrency test. In particular, GET must never trigger the scan.
+        var exposed = ReadRoutes()
+            .Where(route => route.Template.StartsWith("/api/v1/reconciliation/stuck-orders", StringComparison.Ordinal))
+            .Select(route => route.Display)
+            .ToArray();
+
+        Assert.Empty(exposed);
     }
 
     private static List<OpsBridgeRoute> ReadRoutes() =>

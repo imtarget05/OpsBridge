@@ -209,6 +209,9 @@ if (Encoding.UTF8.GetByteCount(configuredSigningKey) < 32)
 // values the validation path below uses - not from a second read of the
 // configuration at a later moment.
 builder.Services.AddOpsBridgeInfrastructure(builder.Configuration, jwtSettings);
+builder.Services.AddHttpClient("factoryflow-ping", client =>
+    client.Timeout = TimeSpan.FromSeconds(5))
+    .ConfigurePrimaryHttpMessageHandler(ConnectorPingNetworkPolicy.CreateHandler);
 
 // CORS for Vite frontend
 builder.Services.AddCors(options =>
@@ -411,6 +414,8 @@ app.MapConnectorEndpoints();
 app.MapIngestionEndpoints();
 app.MapReplayEndpoints();
 app.MapReconciliationEndpoints();
+app.MapAiEndpoints();
+
 app.MapMetrics("/metrics").AllowAnonymous().WithTags("Metrics");
 
 app.Run();

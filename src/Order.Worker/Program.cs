@@ -98,6 +98,15 @@ builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
 builder.Services.AddScoped<PaymentAutomationUseCase>();
 builder.Services.AddHostedService<PaymentTimeoutHostedService>();
 
+var stuckOrderOptions = builder.Configuration
+    .GetSection(StuckOrderOptions.SectionName).Get<StuckOrderOptions>()
+    ?? new StuckOrderOptions();
+builder.Services.AddSingleton(stuckOrderOptions);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IStuckOrderRepository, StuckOrderRepository>();
+builder.Services.AddScoped<StuckOrderScanUseCase>();
+builder.Services.AddHostedService<StuckOrderScanHostedService>();
+
 // Inventory automation (spec §6): periodic low-stock scan, same use case as the
 // API's manual trigger (trigger_type distinguishes timer vs manual in audit).
 var inventoryOptions = builder.Configuration

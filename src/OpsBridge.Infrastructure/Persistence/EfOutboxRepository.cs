@@ -46,4 +46,38 @@ public sealed class EfOutboxRepository(OpsBridgeDbContext db) : IOutboxRepositor
             await db.SaveChangesAsync(ct);
         }
     }
+
+    public async Task<IReadOnlyList<OutboxMessage>> GetStuckMessagesAsync(int limit = 50, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        return await db.OutboxMessages
+            .AsNoTracking()
+            .Where(o => o.ProcessedAt == null && o.Status == "Failed")
+            .OrderBy(o => o.CreatedAt)
+            .Take(limit)
+            .ToListAsync(ct);
+    }
+
+    public async Task<int> RequeueStuckAsync(CancellationToken ct = default)
+    {
+        // Only terminal failures can be replayed. Pending retries are already
+        // owned by the publisher and must not be reset by an operator command.
+        return await db.OutboxMessages
+            .Where(o => o.ProcessedAt == null && o.Status == "Failed")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(o => o.Status, "Pending")
+                .SetProperty(o => o.RetryCount, 0)
+                .SetProperty(o => o.ErrorMessage, (string?)null), ct);
+    }
+
+    public async Task<bool> RequeueMessageAsync(Guid id, CancellationToken ct = default)
+    {
+        var changed = await db.OutboxMessages
+            .Where(o => o.Id == id && o.ProcessedAt == null && o.Status == "Failed")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(o => o.Status, "Pending")
+                .SetProperty(o => o.RetryCount, 0)
+                .SetProperty(o => o.ErrorMessage, (string?)null), ct);
+        return changed == 1;
+    }
 }

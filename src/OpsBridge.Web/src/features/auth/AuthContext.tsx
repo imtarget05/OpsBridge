@@ -7,7 +7,6 @@ interface AuthContextType {
   role: UserRole | null;
   isLoading: boolean;
   login: (username: string, role?: UserRole) => Promise<void>;
-  loginWithGoogle: (credential: string) => Promise<void>;
   logout: () => void;
   switchPersona: (role: UserRole) => Promise<void>;
 }
@@ -50,24 +49,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const loginWithGoogle = async (credential: string) => {
-    setIsLoading(true);
-    try {
-      const res = await api.loginWithGoogle(credential);
-      setUser(res.user);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const logout = () => {
     api.logout();
     setUser(null);
   };
 
-  const switchPersona = async (newRole: UserRole) => {
-    const username = `${newRole.toLowerCase()}_user`;
-    await login(username, newRole);
+  const switchPersona = async (role: UserRole) => {
+    if (!import.meta.env.DEV) {
+      throw new Error('Demo persona switching is unavailable in production.');
+    }
+    await login(`${role.toLowerCase()}_user`, role);
   };
 
   return (
@@ -77,7 +68,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         role: user?.role || null,
         isLoading,
         login,
-        loginWithGoogle,
         logout,
         switchPersona,
       }}

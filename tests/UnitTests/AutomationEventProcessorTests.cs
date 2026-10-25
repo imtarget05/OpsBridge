@@ -56,6 +56,21 @@ public class AutomationEventProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_StuckOrderAlert_IsKnownAndNotDeadLettered()
+    {
+        var (processor, runs, _) = Create();
+        var evt = new OrderFulfillmentStuckEvent(
+            Guid.NewGuid().ToString("D"), Guid.NewGuid(), "unit-test",
+            DateTimeOffset.UtcNow, "stuck-key", Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(-5), 5);
+
+        var outcome = await processor.ProcessAsync(Body(evt), evt.EventType);
+
+        Assert.Equal(AutomationEventOutcome.Processed, outcome);
+        Assert.Equal(AutomationWorkflow.OrderProcessing.ToString(), Assert.Single(runs.Runs).WorkflowName);
+    }
+
+    [Fact]
     public async Task ProcessAsync_RedeliveredEvent_IsDeduplicatedAndAuditedOnce()
     {
         var (processor, runs, _) = Create();

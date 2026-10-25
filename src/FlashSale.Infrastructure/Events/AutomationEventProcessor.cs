@@ -193,6 +193,7 @@ public sealed class AutomationEventProcessor(
     {
         "order.created" => JsonSerializer.Deserialize<OrderCreatedEvent>(json),
         "inventory.reserved" => JsonSerializer.Deserialize<InventoryReservedEvent>(json),
+        "order.fulfillment_stuck" => JsonSerializer.Deserialize<OrderFulfillmentStuckEvent>(json),
         "payment.completed" => JsonSerializer.Deserialize<PaymentCompletedEvent>(json),
         "payment.failed" => JsonSerializer.Deserialize<PaymentFailedEvent>(json),
         "payment.expired" => JsonSerializer.Deserialize<PaymentExpiredEvent>(json),
@@ -211,7 +212,7 @@ public sealed class AutomationEventProcessor(
 
     public static string WorkflowFor(DomainEvent evt) => evt switch
     {
-        OrderCreatedEvent => AutomationWorkflow.OrderProcessing.ToString(),
+        OrderCreatedEvent or OrderFulfillmentStuckEvent => AutomationWorkflow.OrderProcessing.ToString(),
         PaymentCompletedEvent or PaymentFailedEvent or PaymentExpiredEvent
             => AutomationWorkflow.PaymentTimeout.ToString(),
         OrderCancelledEvent or InventoryReleasedEvent or InventoryReservedEvent or InventoryLowStockEvent

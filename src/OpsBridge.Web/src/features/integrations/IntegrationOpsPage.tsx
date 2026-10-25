@@ -45,8 +45,7 @@ export function IntegrationOpsPage() {
     c.id === 'conn-factoryflow' || c.name?.toLowerCase().includes('factoryflow')
   );
 
-  const activeBaseUrl = factoryFlowConnector?.baseUrl ||
-    (isCloudEnv ? 'https://factoryflow.opsbridge.cloud/api' : 'http://localhost:5001/api');
+  const activeBaseUrl = factoryFlowConnector?.baseUrl || 'Chưa cấu hình';
 
   const [pingResult, setPingResult] = useState<{
     success: boolean;
@@ -56,17 +55,17 @@ export function IntegrationOpsPage() {
   } | null>(null);
 
   const pingMutation = useMutation({
-    mutationFn: () => api.pingConnector('conn-factoryflow'),
+    mutationFn: () => api.pingConnector(factoryFlowConnector?.id ?? 'conn-factoryflow'),
     onSuccess: (res) => {
       setPingResult(res);
       setTimeout(() => setPingResult(null), 8000);
     },
-    onError: () => {
-      // Graceful fallback for mock/demo
+    onError: (error) => {
+      // Show actual error from API instead of mock fallback
       setPingResult({
-        success: true,
-        latencyMs: 24,
-        message: 'Kết nối kiểm thử Cloud Gateway phản hồi 200 OK (TLS 1.3)',
+        success: false,
+        latencyMs: 0,
+        message: error instanceof Error ? error.message : 'Không thể kết nối đến connector',
         targetUrl: activeBaseUrl,
       });
       setTimeout(() => setPingResult(null), 8000);
@@ -157,7 +156,7 @@ export function IntegrationOpsPage() {
                   : 'bg-blue-100 text-blue-800 border border-blue-200'
               }`}>
                 {isCloudEnv ? <Cloud className="w-3 h-3 text-emerald-600" /> : <Server className="w-3 h-3 text-blue-600" />}
-                <span>{isCloudEnv ? 'CLOUD ACTIVE' : 'LOCAL DEV'}</span>
+                <span>{isCloudEnv ? 'CLOUD UI' : 'LOCAL DEV'}</span>
               </span>
             </div>
           </CardHeader>
@@ -190,7 +189,7 @@ export function IntegrationOpsPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => pingMutation.mutate()}
-                disabled={pingMutation.isPending}
+                disabled={pingMutation.isPending || !factoryFlowConnector}
                 className="w-full flex items-center justify-center gap-1.5 text-xs border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100/70 cursor-pointer shadow-xs"
               >
                 <Radio className={`w-3.5 h-3.5 ${pingMutation.isPending ? 'animate-pulse text-indigo-600' : ''}`} />
@@ -198,12 +197,17 @@ export function IntegrationOpsPage() {
               </Button>
 
               {pingResult && (
-                <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-800 flex items-center justify-between">
+                <div role="status" className={`p-2 rounded-lg border text-[11px] flex items-center gap-2 ${
+                  pingResult.success
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                }`}>
                   <span className="flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>200 OK · Phản hồi trong {pingResult.latencyMs}ms</span>
+                    {pingResult.success
+                      ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      : <AlertOctagon className="w-3.5 h-3.5 text-rose-600 shrink-0" />}
+                    <span>{pingResult.success ? `Kết nối thành công · ${pingResult.latencyMs}ms` : 'Kết nối thất bại'}: {pingResult.message}</span>
                   </span>
-                  <span className="font-mono text-[10px] text-emerald-700 font-semibold">TLS 1.3 Verified</span>
                 </div>
               )}
             </div>
