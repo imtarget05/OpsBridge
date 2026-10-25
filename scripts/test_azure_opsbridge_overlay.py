@@ -52,6 +52,15 @@ class AzureOpsBridgeOverlayTests(unittest.TestCase):
             "/health/messaging",
         )
 
+    def test_flashsale_migration_runs_as_presync_hook(self):
+        job = self.objects[("Job", "order-migrate")]
+        annotations = job["metadata"].get("annotations", {})
+        self.assertEqual(annotations.get("argocd.argoproj.io/hook"), "PreSync")
+        self.assertEqual(
+            annotations.get("argocd.argoproj.io/hook-delete-policy"),
+            "BeforeHookCreation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
