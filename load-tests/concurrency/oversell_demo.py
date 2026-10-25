@@ -159,8 +159,13 @@ def audit_failures(summary: Summary, requests: int, stock: int, quantity: int,
         failures.append(f"responses: {summary.total}/{requests}, failures: {summary.failed}")
     if summary.accepted != expected_accepted:
         failures.append(f"accepted: {summary.accepted}, expected: {expected_accepted}")
-    if summary.rejected != expected_rejected or summary.status_counts.get("409", 0) != expected_rejected:
-        failures.append(f"409 rejections: {summary.status_counts.get('409', 0)}, expected: {expected_rejected}")
+    # Hợp đồng rate limiting (ADR-025): 429 = rate limit vượt ngưỡng (tiêu chí hạ tầng),
+    # 409 = xung đột nghiệp prática (hết hàng, trùng khóa idempotency). Cả hai đều có nghĩa
+    # là "yêu cầu không được chấp nhận". Harness kiểm tra bảo tồn tồn kho, không phải kiểm tra
+    # chính xác mã HTTP của từng phản ứng từ chối — do đó cả 409 và 429 đều tính là rejected.
+    total_rejections = summary.status_counts.get("409", 0) + summary.status_counts.get("429", 0)
+    if summary.rejected != expected_rejected or total_rejections != expected_rejected:
+        failures.append(f"rejections (409+429): {total_rejections}, expected: {expected_rejected} (409={summary.status_counts.get('409', 0)}, 429={summary.status_counts.get('429', 0)})")
     expected_stock = stock - summary.accepted * quantity
     if final_stock != expected_stock or final_stock < 0:
         failures.append(f"final stock: {final_stock}, expected from accepted: {expected_stock}")

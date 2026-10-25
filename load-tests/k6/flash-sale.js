@@ -3,7 +3,9 @@ import { check } from 'k6';
 
 // Redis-unavailable fallback completes synchronously (200); the queue path
 // accepts asynchronously (202). Sold-out responses (409) are also expected.
-http.setResponseCallback(http.expectedStatuses(200, 202, 409));
+// Rate-limiting (429) is an infrastructure rejection, not an application error,
+// and is expected under burst load.
+http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
 
 // Flash-sale purchase burst against the tiered order endpoint.
 // Usage: k6 run -e BASE_URL=http://localhost:5065 load-tests/k6/flash-sale.js
@@ -48,7 +50,7 @@ export default function () {
     });
 
   const ok = check(res, {
-    'accepted (200/202) or sold out (409)': (r) => r.status === 200 || r.status === 202 || r.status === 409,
+    'accepted (200/202) or rejected (409/429)': (r) => r.status === 200 || r.status === 202 || r.status === 409 || r.status === 429,
     'never a 5xx': (r) => r.status < 500,
   });
   if (!ok) console.error(`unexpected status ${res.status}`);

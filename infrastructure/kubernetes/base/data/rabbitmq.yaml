@@ -58,6 +58,12 @@ spec:
           securityContext:
             runAsUser: 100
             runAsGroup: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: data
               mountPath: /var/lib/rabbitmq
