@@ -12,7 +12,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTEXT = "aks-portfolio-dev"
 NAMESPACE = "flashsale"
-SOURCE_SHA = "3e7fb0d30dd2a5caffd3a7b9c73ec24367e11bf0"
+SOURCE_SHA = "d8a9220a88556de305a67e6eb5ff1f80f7da79bb"
 IMAGE = f"acrflashsalep6.azurecr.io/opsbridge-api:{SOURCE_SHA}"
 
 

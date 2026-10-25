@@ -43,7 +43,7 @@ images:
     newTag: e528d5a7503b4dd06a6646eb3f4b42ea23313d3e
   - name: opsbridge-api
     newName: acrflashsalep6.azurecr.io/opsbridge-api
-    newTag: 3e7fb0d30dd2a5caffd3a7b9c73ec24367e11bf0
+    newTag: d8a9220a88556de305a67e6eb5ff1f80f7da79bb
 
 labels:
   - pairs:
