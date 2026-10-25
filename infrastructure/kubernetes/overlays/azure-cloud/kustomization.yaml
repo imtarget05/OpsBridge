@@ -11,6 +11,19 @@ resources:
 
 patches:
   - path: opsbridge-migration-exclude.yaml
+  # Argo waits for the FlashSale schema step before syncing workloads. The Job
+  # expires after completion; as a hook it is not treated as a missing workload.
+  - target:
+      kind: Job
+      name: order-migrate
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: order-migrate
+        annotations:
+          argocd.argoproj.io/hook: PreSync
+          argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 
 replicas:
   - name: order-api
