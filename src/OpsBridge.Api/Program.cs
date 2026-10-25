@@ -412,7 +412,6 @@ app.MapAuthEndpoints(app.Environment);
 app.MapWebhookEndpoints();
 app.MapConnectorEndpoints();
 app.MapIngestionEndpoints();
-app.MapOutboxEndpoints();
 app.MapReplayEndpoints();
 app.MapReconciliationEndpoints();
 app.MapOutboxEndpoints();
