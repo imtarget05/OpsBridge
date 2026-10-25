@@ -39,8 +39,24 @@ Context: `aks-portfolio-dev`, namespace `flashsale`, source commit
 | Runtime PostgreSQL DDL privileges | database `CREATE=False`, schema `CREATE=False` |
 | Kubernetes Secret annotations | empty for both OpsBridge Secrets |
 
-The public web UI is still a separate deployment step. This entry verifies
-the OpsBridge API only. Argo reports `OutOfSync` because its pinned source is
-still the preceding commit and two pre-existing FlashSale resources also differ;
-update the Argo source pin after this PR lands, then inspect those differences
-before any broad sync.
+## Cloudflare Pages web release
+
+The existing `opsbridge-dashboard` Pages project had been serving a mock user
+response from `/api/v1/auth/me` without a token. Its current source contains a
+Pages Function that fails closed when the upstream is unavailable. Set its
+production `API_BACKEND_URL` to the HTTPS Cloudflare Edge prefix
+`https://portfolio-api-edge.tanmainguyenbinh.workers.dev/opsbridge` and deployed
+the built Vite assets plus Functions bundle with Wrangler. Deployment URL:
+`https://5eb99762.opsbridge-dashboard.pages.dev`.
+
+| Public production check | Result |
+| --- | --- |
+| `https://opsbridge-dashboard.pages.dev/` | HTTP 200 HTML |
+| `https://opsbridge-dashboard.pages.dev/api/v1/auth/me` without token | HTTP 401 |
+| Previous mock user response | No longer returned |
+| Web build and contract tests | pass, 11/11 |
+
+Argo reports `OutOfSync` because its pinned source is still the preceding
+commit and two pre-existing FlashSale resources also differ. Update the Argo
+source pin after this PR lands, then inspect those differences before any
+broad sync.
