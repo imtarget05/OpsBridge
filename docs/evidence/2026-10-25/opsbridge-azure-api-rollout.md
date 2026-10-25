@@ -60,3 +60,15 @@ Argo reports `OutOfSync` because its pinned source is still the preceding
 commit and two pre-existing FlashSale resources also differ. Update the Argo
 source pin after this PR lands, then inspect those differences before any
 broad sync.
+
+## Later GitOps reconciliation
+
+Argo was pinned to merge commit `30320bd` and selectively synced the OpsBridge
+Service, Deployment and HTTPRoute. RabbitMQ's init-container security context
+was then synced separately; its StatefulSet rolled successfully and both
+`/flashsale/health/live` and `/opsbridge/health/messaging` returned HTTP 200.
+The remaining drift was the FlashSale `order-migrate` Job, which had completed
+and been removed by its TTL. The Azure overlay now marks that Job as a
+`PreSync` hook with `BeforeHookCreation`, matching the local overlay's schema
+ordering. Argo can run it before future full syncs without treating a
+TTL-collected completed Job as a missing steady-state workload.
