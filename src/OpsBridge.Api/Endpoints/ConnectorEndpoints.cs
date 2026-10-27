@@ -87,11 +87,14 @@ public static class ConnectorEndpoints
             }
 
             using var httpClient = httpClientFactory.CreateClient("factoryflow-ping");
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
             var stopwatch = Stopwatch.StartNew();
 
             try
             {
-                using var response = await httpClient.GetAsync(new Uri(target, $"{target.AbsolutePath.TrimEnd('/')}/health"), ct);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(10));
+                using var response = await httpClient.GetAsync(new Uri(target, $"{target.AbsolutePath.TrimEnd('/')}/health"), cts.Token);
                 stopwatch.Stop();
                 if (!response.IsSuccessStatusCode)
                 {
