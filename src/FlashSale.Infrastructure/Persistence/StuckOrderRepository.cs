@@ -84,8 +84,10 @@ public sealed class StuckOrderRepository(AppDbContext db, OutboxEventWriter even
             return true;
         }
         catch (DbUpdateException ex) when (ex.InnerException is PostgresException
-            { SqlState: PostgresErrorCodes.UniqueViolation,
-              ConstraintName: "IX_OutboxMessages_MessageId" })
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "IX_OutboxMessages_MessageId"
+        })
         {
             await transaction.RollbackAsync(ct);
             foreach (var entry in db.ChangeTracker.Entries<OutboxMessage>()
