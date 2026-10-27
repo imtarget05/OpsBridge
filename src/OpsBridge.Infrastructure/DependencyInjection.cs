@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<OpsBridge.Application.Reconciliation.IReconciliationRepository, EfReconciliationRepository>();
         services.AddScoped<OpsBridge.Application.Reconciliation.IAuditEventRepository, EfAuditEventRepository>();
         services.AddScoped<OpsBridge.Application.StuckOrder.IStuckOrderAlertRepository, EfStuckOrderAlertRepository>();
+        services.AddSingleton<OpsBridge.Application.Common.ITimeProvider, OpsBridge.Application.Common.SystemTimeProvider>();
 
         // Adapters
         services.AddSingleton<IWebhookSignatureVerifier, HmacWebhookVerifier>();
