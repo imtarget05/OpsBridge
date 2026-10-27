@@ -76,20 +76,28 @@ public sealed class StuckOrderScanTests
         var compensationFailed = AddReservation(db, "compensation-failed", time);
         db.OutboxMessages.Add(new OutboxMessage
         {
-            EventType = "order.created", AggregateType = "order", AggregateId = "publication-stuck",
-            CorrelationId = Guid.NewGuid(), CreatedAt = time,
+            EventType = "order.created",
+            AggregateType = "order",
+            AggregateId = "publication-stuck",
+            CorrelationId = Guid.NewGuid(),
+            CreatedAt = time,
             DeadLetteredAt = time.AddMinutes(1)
         });
         db.Orders.Add(new Order { IdempotencyKey = "persisted", CreatedAt = time.UtcDateTime });
         db.OutboxMessages.Add(new OutboxMessage
         {
-            EventType = "inventory.released", AggregateType = "order", AggregateId = "released",
-            CorrelationId = released.CorrelationId, CreatedAt = time.AddMinutes(1)
+            EventType = "inventory.released",
+            AggregateType = "order",
+            AggregateId = "released",
+            CorrelationId = released.CorrelationId,
+            CreatedAt = time.AddMinutes(1)
         });
         db.OutboxMessages.Add(new OutboxMessage
         {
-            EventType = "inventory.compensation_failed", AggregateType = "order",
-            AggregateId = "compensation-failed", CorrelationId = compensationFailed.CorrelationId,
+            EventType = "inventory.compensation_failed",
+            AggregateType = "order",
+            AggregateId = "compensation-failed",
+            CorrelationId = compensationFailed.CorrelationId,
             CreatedAt = time.AddMinutes(1)
         });
         await db.SaveChangesAsync();
@@ -106,8 +114,11 @@ public sealed class StuckOrderScanTests
     {
         var row = new OutboxMessage
         {
-            EventType = "inventory.reserved", AggregateType = "order", AggregateId = key,
-            CorrelationId = Guid.NewGuid(), CreatedAt = at
+            EventType = "inventory.reserved",
+            AggregateType = "order",
+            AggregateId = key,
+            CorrelationId = Guid.NewGuid(),
+            CreatedAt = at
         };
         db.OutboxMessages.Add(row);
         return row;
