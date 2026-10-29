@@ -1045,7 +1045,7 @@ jobs:
       # disappears because an import failed is the exact bug class this job
       # exists to catch — so it is installed explicitly and validated-objects.py
       # exits non-zero if the import is still missing.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: Install validation dependencies
