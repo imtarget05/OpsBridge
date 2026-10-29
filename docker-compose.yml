@@ -29,7 +29,7 @@ services:
       # deterministic-simulator branch and returns sim_tx_... instead of a real
       # tx_... . Override with PAYMENT_SERVICE_URL when the API runs on the host
       # (e.g. PAYMENT_SERVICE_URL=http://localhost:5002).
-      - Payment__ServiceUrl=${PAYMENT_SERVICE_URL:-http://payment-service:8080}
+      - Payment__ServiceUrl=${PAYMENT_SERVICE_URL}
       # Messaging provider (P1 fix, 2026-10-20): set EXPLICITLY. The order queue
       # auto-detects RabbitMQ from the connection string, but the DOMAIN EVENT
       # publisher does NOT: DomainEventServiceCollectionExtensions.ResolveProvider

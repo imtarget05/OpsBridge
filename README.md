@@ -1,7 +1,7 @@
 # OpsBridge — Order Reliability (FlashSale) + Event-Driven Operations
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql)](https://postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?logo=postgresql)](https://postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-Cache-DC382D?logo=redis)](https://redis.io/)
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Messaging-FF6600?logo=rabbitmq)](https://rabbitmq.com/)
 
@@ -144,11 +144,12 @@ the uncommitted fixes; remote CI remains unverified.
 
 | Suite | Latest local status | Command |
 |---|---|---|
-| FlashSale unit (use cases, architecture + authorization guards) | **178/178 PASS** before web-only HEAD advance | `dotnet test tests/UnitTests/FlashSale.UnitTests.csproj -c Release` |
+| FlashSale unit (use cases, architecture + authorization guards) | **186/186 PASS** before web-only HEAD advance | `dotnet test tests/UnitTests/FlashSale.UnitTests.csproj -c Release` |
 | OpsBridge unit + contract | **45/45 + 7/7 PASS** before web-only HEAD advance | `dotnet test tests/OpsBridge.UnitTests/OpsBridge.UnitTests.csproj -c Release` and `dotnet test tests/OpsBridge.ContractTests/OpsBridge.ContractTests.csproj -c Release` |
-| OpsBridge integration (PostgreSQL + RabbitMQ Testcontainers) | **39/39 PASS** before web-only HEAD advance | `dotnet test tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj -c Release --no-restore` |
-| FlashSale integration (PostgreSQL + Redis + RabbitMQ Testcontainers) | **80/80 PASS** in full solution run | `dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj -c Release` |
+| OpsBridge integration (PostgreSQL + RabbitMQ Testcontainers) | **40/40 PASS** before web-only HEAD advance | `dotnet test tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj -c Release --no-restore` |
+| FlashSale integration (PostgreSQL + Redis + RabbitMQ Testcontainers) | **81/81 PASS** in full solution run | `dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj -c Release` |
 | 50/10 harness and Python verdict tests | **10 accepted / 40 × 409 / stock 0 / 10 orders** before web-only HEAD advance; **6/6 Python tests PASS** after it | Commands and sanitized output in `docs/evidence/portfolio-opsbridge-local-gates-2026-10-21.txt` |
+| Provenance marker | as of commit f746cc8 | `git log --oneline -1` |
 
 ### 🔐 Authorization model (ADR-013 §5)
 
