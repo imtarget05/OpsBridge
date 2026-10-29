@@ -1,5 +1,6 @@
 using FlashSale.Application.Automation;
 using FlashSale.Application.Persistence;
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 
 namespace FlashSale.Infrastructure.Services;
@@ -74,13 +75,17 @@ public sealed class AiAutomationService(ILogger<AiAutomationService> logger) : I
             healthStatus = "Healthy";
         }
 
-        var execSummary = $"Báo cáo ngày {reportDate:yyyy-MM-dd}: Tổng {total} đơn hàng, {confirmed} đơn thành công ({successRate:F1}%), doanh thu ghi nhận {revenue:N0} VNĐ. Trạng thái vận hành: {healthStatus}.";
+        var execSummary = string.Format(CultureInfo.InvariantCulture,
+            "Báo cáo ngày {0:yyyy-MM-dd}: Tổng {1} đơn hàng, {2} đơn thành công ({3:F1}%), doanh thu ghi nhận {4:N0} VNĐ. Trạng thái vận hành: {5}.",
+            reportDate, total, confirmed, successRate, revenue, healthStatus);
 
-        var insights = $"Phát hiện {cancelled} đơn hủy và {failed} đơn thanh toán quá hạn/lỗi ({failRate:F1}%).";
+        var insights = string.Format(CultureInfo.InvariantCulture,
+            "Phát hiện {0} đơn hủy và {1} đơn thanh toán quá hạn/lỗi ({2:F1}%).", cancelled, failed, failRate);
         if (metrics.TopProducts.Count > 0)
         {
             var top = metrics.TopProducts[0];
-            insights += $" Mặt hàng bán chạy nhất: {top.Name} (SL: {top.Quantity}, Doanh thu: {top.Revenue:N0} VNĐ).";
+            insights += string.Format(CultureInfo.InvariantCulture,
+                " Mặt hàng bán chạy nhất: {0} (SL: {1}, Doanh thu: {2:N0} VNĐ).", top.Name, top.Quantity, top.Revenue);
         }
 
         logger.LogInformation("Generated Daily Report AI Summary for {Date:yyyy-MM-dd}: Health={Health}", reportDate, healthStatus);

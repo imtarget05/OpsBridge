@@ -37,6 +37,7 @@ public partial class EndpointAuthorizationGuardTests
     [
         Path.Combine("src", "Order.Api", "Program.cs"),
         Path.Combine("src", "Order.Api", "Auth", "AuthEndpoints.cs"),
+        Path.Combine("src", "Order.Api", "Extensions", "Routing.cs"),
     ];
 
     /// <summary>
