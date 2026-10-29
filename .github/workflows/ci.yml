@@ -235,7 +235,7 @@ jobs:
       # Node version taken from the repository's own engine constraint:
       # src/OpsBridge.Web/package-lock.json pins vite 8 / @vitejs/plugin-react 6 /
       # oxlint to "node": "^20.19.0 || >=22.12.0" — Node 22 (LTS) satisfies it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -406,7 +406,7 @@ jobs:
           echo "- API image: \`opsbridge-api:stack-smoke\` (Release, Development)" >> "$GITHUB_STEP_SUMMARY"
           echo "- database: postgres:15-alpine, schema applied with \`--migrate\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- browser base URL: \`http://127.0.0.1:${{ env.WEB_PORT }}\` (the containerised web, NOT the dev server)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
