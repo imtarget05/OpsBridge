@@ -10,6 +10,7 @@
     <!-- Clean Architecture: Application depends only on Domain (+ logging abstractions
          for use-case telemetry). All infrastructure (EF, Redis, Service Bus) is hidden
          behind the ports defined in this project. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
   </ItemGroup>
 

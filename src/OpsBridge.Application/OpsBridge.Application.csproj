@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <!-- Ports and Application services only depend on standard abstractions -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
   </ItemGroup>
 
