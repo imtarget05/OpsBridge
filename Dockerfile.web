@@ -67,7 +67,7 @@
 # ---------------------------------------------------------------------------
 # BUILD STAGE - the Vite build.
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 
 # Dependency layer first: the lock file changes far less often than the
