@@ -12,7 +12,7 @@ spec:
   project: portfolio
   source:
     repoURL: "https://github.com/imtarget05/FlashSale-Backend.git"
-    targetRevision: main
+    targetRevision: 1036d114305d7756f282aed826761e3f51b4c400
     path: infrastructure/kubernetes/overlays/azure-cloud
   destination:
     server: "https://kubernetes.default.svc"

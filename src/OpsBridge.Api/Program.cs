@@ -419,6 +419,44 @@ app.MapAiEndpoints();
 
 app.MapMetrics("/metrics").AllowAnonymous().WithTags("Metrics");
 
+// ------------------------------------------------------------------
+// Runtime hardening: CSP + security headers (P2.12)
+// Applied to every response. CSP is restrictive by default: only
+// same-origin scripts/styles, inline blocked, images from self + data:.
+// Authentication endpoints get the same headers plus Cache-Control:
+// no-store so credentials are never cached by clients or proxies.
+// ------------------------------------------------------------------
+app.Use((context, next) =>
+{
+    context.Response.OnStarting(() =>
+    {
+        var headers = context.Response.Headers;
+        if (headers.ContainsKey("Content-Security-Policy")) return Task.CompletedTask;
+        headers.ContentSecurityPolicy =
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; " +
+            "base-uri 'self'; form-action 'self';";
+        headers["X-Content-Type-Options"] = "nosniff";
+        headers["X-Frame-Options"] = "DENY";
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+        headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+        headers["X-XSS-Protection"] = "1; mode=block";
+
+        // Hardening for authentication endpoints: never cache credential-bearing responses.
+        var path = context.Request.Path.Value ?? string.Empty;
+        if (path.StartsWith("/api/auth/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/api/v1/auth/", StringComparison.OrdinalIgnoreCase))
+        {
+            headers.CacheControl = "no-store, no-cache, must-revalidate";
+            headers.Pragma = "no-cache";
+            headers["Expires"] = "0";
+        }
+        return Task.CompletedTask;
+    });
+
+    return next();
+});
+
 app.Run();
 
 // Explicit, because the schema entrypoint branches above return an int: once one

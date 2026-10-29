@@ -61,3 +61,52 @@ Demo: `docker compose up` → `k6 run load-tests/k6/flash-sale.js` → Grafana `
 > This is an **index of evidence, not a production-readiness claim**. Nothing in
 > this repository is production-ready, and no statement above should be
 > presented as one.
+
+---
+
+## P3.9 — Standardized evidence (2026-10-29)
+
+**Commit SHA:** `1036d114305d7756f282aed826761e3f51b4c400` (HEAD)  
+**Evidence pack:** `docs/evidence/2026-10-29/REGISTRY.md`
+
+### Test counts
+
+| Suite | Count | Status | Evidence |
+|-------|-------|--------|----------|
+| FlashSale unit tests | 186 / 186 | VERIFIED (PASS) | `docs/evidence/2026-10-29/unit-tests/flashsale-unit.md` |
+| OpsBridge unit tests | 45 / 45 | VERIFIED (PASS) | `docs/evidence/2026-10-29/unit-tests/opsbridge-unit.md` |
+| Contract tests | 7 / 7 | VERIFIED (PASS) | `docs/evidence/2026-10-29/contract-tests/contract.md` |
+| OpsBridge integration tests | 40 / 40 | VERIFIED (PASS) | `docs/evidence/2026-10-29/integration-tests/opsbridge-integration.md` |
+| FlashSale integration tests | 81 / 81 | VERIFIED (PASS) | `docs/evidence/2026-10-29/integration-tests/flashsale-integration.md` |
+| Python harness (concurrency regressions) | 6 / 6 | VERIFIED (PASS) | `load-tests/concurrency/oversell_demo.py` (6 verdict/resync tests) |
+
+Total: 284 automated test cases + 1 concurrency harness run, 0 failures.
+
+### Coverage gate
+
+| Item | Value | Status |
+|------|-------|--------|
+| Coverage threshold | 75% (line) | gate defined in `coverlet.runsettings` (`<Threshold>75</Threshold>`, `<ThresholdType>line</ThresholdType>`) |
+| Exclusions | `**/*Tests*`, `**/obj/**`, `**/bin/**`, `**/*.g.cs`, `**/*.g.i.cs`, `**/Program.cs` | in `coverlet.runsettings` |
+| Coverage gate enforced | Not enforced as CI fail-under (artifact only) | see `.github/workflows/ci.yml` coverage step |
+
+### Deployment state
+
+| Component | State | Evidence |
+|-----------|-------|----------|
+| FlashSale images (order-api, order-worker) | PUBLISHED to ACR (`acrflashsalep6.azurecr.io`), SHA-tagged, digest-verified | `docs/evidence/release/phase6-release-engineering.md` |
+| OpsBridge API image | NOT_VERIFIED — built locally, not release-pushed to ACR | no `docker-build-scan`/`release-push` evidence for OpsBridge API/Web |
+| OpsBridge Web image | NOT_VERIFIED — not release-pushed to ACR | no ACR push evidence |
+| AKS deployment | NOT_APPLIED — prod overlay rendered & validated offline, never applied to a live cluster | `docs/evidence/kubernetes/phase7c-readiness.md` |
+
+### Cloud gates
+
+| Gate | Value | Status |
+|------|-------|--------|
+| CI pipeline size | 1102 lines (`.github/workflows/ci.yml`) | present |
+| Terraform validate | green | `infrastructure/terraform/` validates offline |
+| AKS manifests applied | No — configuration only | `docs/evidence/kubernetes/phase7c-readiness.md` |
+
+### Claims boundary
+
+Every "VERIFIED" claim above has a supporting file in `docs/evidence/2026-10-29/` (see REGISTRY.md). Deployment-state and cloud-gate items marked NOT_VERIFIED/NOT_APPLIED are intentionally not claimed as done.

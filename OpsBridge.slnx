@@ -1,13 +1,18 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/OpsBridge.Api/OpsBridge.Api.csproj" />
-    <Project Path="src/OpsBridge.Application/OpsBridge.Application.csproj" />
     <Project Path="src/OpsBridge.Domain/OpsBridge.Domain.csproj" />
+    <Project Path="src/OpsBridge.Application/OpsBridge.Application.csproj" />
     <Project Path="src/OpsBridge.Infrastructure/OpsBridge.Infrastructure.csproj" />
+    <Project Path="src/OpsBridge.Api/OpsBridge.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/Web/">
+    <!-- OpsBridge.Web is a static Vite + React SPA (src/OpsBridge.Web):
+         package.json/vite, no .csproj, so there is no .NET project to list here.
+         It is part of the OpsBridge bounded context and calls OpsBridge.Api. -->
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/OpsBridge.UnitTests/OpsBridge.UnitTests.csproj" />
     <Project Path="tests/OpsBridge.ContractTests/OpsBridge.ContractTests.csproj" />
     <Project Path="tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj" />
-    <Project Path="tests/OpsBridge.UnitTests/OpsBridge.UnitTests.csproj" />
   </Folder>
 </Solution>

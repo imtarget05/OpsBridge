@@ -1,0 +1,5 @@
+<Solution>
+  <!-- cross-context solution: chứa chỉ integration runbook (docs/runbooks/).
+       Không có dự án biên dịch — mỗi dự án .NET thuộc về AzureFlashSale.slnx
+       (FlashSale) hoặc OpsBridge.slnx (OpsBridge + Web); hết cross-listing. -->
+</Solution>

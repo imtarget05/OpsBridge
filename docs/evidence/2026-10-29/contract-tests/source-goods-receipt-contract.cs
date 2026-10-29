@@ -1,0 +1,1 @@
+../../../../tests/OpsBridge.ContractTests/GoodsReceiptContractTests.cs

@@ -10,14 +10,15 @@ terraform {
       version = "~> 3.6"
     }
   }
-  # Remote state lives in an Azure Storage backend. Create it once, then:
+  # Remote state lives in an Azure Storage backend (azurerm). Create the
+  # storage account once (see infrastructure/terraform/backup-storage/), then:
   #   terraform init -backend-config="storage_account_name=<acct>" ...
-  # backend "azurerm" {
-  #   resource_group_name  = "rg-tfstate"
-  #   storage_account_name = "<tfstate-account>"
-  #   container_name       = "tfstate"
-  #   key                  = "flashsale.terraform.tfstate"
-  # }
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate"
+    storage_account_name = "<tfstate-account>"
+    container_name       = "tfstate"
+    key                  = "flashsale.terraform.tfstate"
+  }
 }
 
 provider "azurerm" {
@@ -46,7 +47,37 @@ resource "azurerm_container_registry" "acr" {
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   sku                 = "Basic"
-  admin_enabled       = true
+  admin_enabled       = false
+}
+
+
+# ---------------------------------------------------------------
+# OIDC federation: AKS workload identity pulls from ACR
+# AKS kubelet / workload identity uses OIDC to acquire an ACR pull
+# token without admin_enabled or a client secret (ADR-011).
+# ---------------------------------------------------------------
+resource "azurerm_user_assigned_identity" "aks_acr_pull" {
+  name                = "id-aks-acr-pull"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+}
+
+# AKS OIDC issuer (configured when the AKS cluster is created; the issuer URL
+# is the cluster's OIDC endpoint, e.g. https://<cluster>.region.aks.io/).
+resource "azurerm_federated_identity_credential" "aks_acr_pull" {
+  name                = "aks-acr-pull"
+  resource_group_name = azurerm_resource_group.rg.name
+  parent_id           = azurerm_user_assigned_identity.aks_acr_pull.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = var.aks_oidc_issuer_url
+  subject             = "system:serviceaccount:flash-sale-prod:default"
+}
+
+# AcrPull so the AKS identity can pull images from this ACR.
+resource "azurerm_role_assignment" "aks_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.aks_acr_pull.principal_id
 }
 
 # ---------------------------------------------------------------

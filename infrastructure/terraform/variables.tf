@@ -40,3 +40,8 @@ variable "redis_sku" {
   type        = string
   default     = "Basic"
 }
+variable "aks_oidc_issuer_url" {
+  description = "AKS cluster OIDC issuer URL for workload identity federation (ACR pull)."
+  type        = string
+  default     = ""
+}

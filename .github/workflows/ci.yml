@@ -10,7 +10,7 @@ name: FlashSale CI (DevSecOps)
 #   opsbridge-tests       OpsBridge unit + contract + integration (68+ tests)
 #   concurrency-harness   50 buyers vs stock 10 — oversell must not happen
 #   security-scan         Trivy fs (vuln + secret + IaC misconfig)
-#   docker-build-scan     build API+worker images, Trivy image scan
+#   docker-build-scan     build API+worker+opsbridge images, Trivy image scan
 #   sonarqube             Sonar analysis + QUALITY GATE (needs SONAR_TOKEN;
 #                         skipped with an explicit log line until configured)
 #   manifest-validation   renders the prod overlay, asserts it is deployable
@@ -45,6 +45,7 @@ jobs:
           dotnet test tests/UnitTests/FlashSale.UnitTests.csproj
           --no-build -v normal --logger trx --results-directory ./test-results
           --collect:"XPlat Code Coverage"
+          --settings coverlet.runsettings
       # Re-verified 2026-10-19 on fd7eb3e (SDK 10.0.400): 172/172 PASS.
       # The earlier "161/162 red" state was fixed in 66dca40. A fail-under
       # threshold is still NOT set — enabling one is a separate decision that
@@ -54,6 +55,18 @@ jobs:
         run: |
           echo "Coverage files (if any):"
           find tests/UnitTests/TestResults -name 'coverage.cobertura.xml' 2>/dev/null || echo "(none — test run failed before collect)"
+      - name: Coverage gate — fail under 75% line coverage (P2.11)
+        if: always()
+        run: |
+          set -euo pipefail
+          FILE=$(find tests/UnitTests/TestResults -name 'coverage.cobertura.xml' | head -1)
+          if [ -z "$FILE" ]; then
+            echo "FAIL: no coverage.cobertura.xml found"
+            exit 1
+          fi
+          RATE=$(python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('$FILE').getroot(); print(float(r.get('line-rate','0')))")
+          echo "Line coverage: ${RATE}"
+          python3 -c "r=${RATE}; exit(0 if r >= 0.75 else 1)" || { echo "FAIL: coverage ${RATE} below 75% threshold"; exit 1; }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -777,6 +790,36 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: flashsale/payment-service:ci-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+      - name: Build opsbridge-api image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.opsbridge
+          push: false
+          load: true
+          tags: opsbridge/api:ci-${{ github.sha }}
+      - name: Build opsbridge-web image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.web
+          push: false
+          load: true
+          tags: opsbridge/web:ci-${{ github.sha }}
+      - name: Trivy image scan — opsbridge-api (HIGH+ blocks)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: opsbridge/api:ci-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+      - name: Trivy image scan — opsbridge-web (HIGH+ blocks)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: opsbridge/web:ci-${{ github.sha }}
           severity: HIGH,CRITICAL
           exit-code: '1'
           ignore-unfixed: true

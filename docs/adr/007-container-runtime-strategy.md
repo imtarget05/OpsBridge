@@ -24,8 +24,13 @@ unused, no resource bounds, hard-coded dev credentials, ephemeral DLQ.
   `unless-stopped`, 10m×3 log rotation; named volumes
   `postgres-data`/`rabbitmq-data`/`dlq-data`; Redis runs persistence-off
   (reservation tier rebuilds from Postgres each boot).
-- **Kafka** → `profiles: [experimental]` opt-in; dead
-  `KafkaActivityTracker` code kept but documented UNUSED.
+- **Kafka** → `profiles: [experimental]` opt-in; dead code confirmed ABSENT:
+  quét toàn bộ `src/` và `tests/` — không có file nguồn `*KafkaActivityTracker*`
+  (không có class `KafkaActivityTracker` nào trong codebase), do đó không có
+  dead code để xoá và KHÔNG promote thành profile real. Dịch vụ `kafka` trong
+  `docker-compose.yml` giữ nguyên profile `experimental`, không khởi động
+  mặc định, không bị các service của OpsBridge phụ thuộc (xem compose comment
+  tại dòng Kafka UNUSED).
 - **Env**: `${VAR:-default}` everywhere + `.env.example` (`API_PORT=5000`
   default; macOS ControlCenter squats 5000, so local runs use
   `API_PORT=5065`); `.env` git-ignored (no `.env` committed).
