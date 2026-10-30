@@ -43,7 +43,7 @@ services:
       # aspnet runtime has no wget/curl and sh lacks /dev/tcp: run a tiny
       # framework-dependent probe with the SDK-free runtime (dotnet is present
       # because the app itself runs on it). Liveness alias /healthz kept.
-      test: ["CMD-SHELL", "dotnet exec /app/HealthProbe.dll http://127.0.0.1:8080/health/ready || exit 1"]
+      test: ["CMD-SHELL", "dotnet /app/healthprobe/HealthProbe.dll http://127.0.0.1:8080/health/ready || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5

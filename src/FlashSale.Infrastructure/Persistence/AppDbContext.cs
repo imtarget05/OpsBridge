@@ -23,6 +23,7 @@ public class AppDbContext : DbContext
     public DbSet<CheckoutSagaState> CheckoutSagas { get; set; } = null!;
     public DbSet<OutboxMessage> OutboxMessages { get; set; } = null!;
     public DbSet<OutboxRecoveryCommand> OutboxRecoveryCommands { get; set; } = null!;
+    public DbSet<OutboxInvestigationAudit> OutboxInvestigationAudits { get; set; } = null!;
     public DbSet<InboxMessage> InboxMessages { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -151,6 +152,18 @@ public class AppDbContext : DbContext
             entity.HasIndex(x => x.MessageId);
         });
 
+        // AgentOps investigation audit (read-only audit trail)
+        modelBuilder.Entity<OutboxInvestigationAudit>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Verdict).HasMaxLength(50);
+            entity.Property(a => a.Recommendation).HasMaxLength(1000);
+            entity.Property(a => a.EvidenceHash).HasMaxLength(64);
+            entity.Property(a => a.AssessedBy).HasMaxLength(100);
+            entity.HasIndex(a => a.MessageId);
+            entity.HasIndex(a => a.CreatedAt);
+        });
+
         // Deduplication Inbox (Phase 10, ADR-019)
         modelBuilder.Entity<InboxMessage>(entity =>
         {
@@ -178,4 +191,3 @@ public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbConte
         return new AppDbContext(options);
     }
 }
-

@@ -791,6 +791,9 @@ public sealed class OutboxCrashWindowTests(OutboxCrashWindowFixture fx)
     {
         public Task<bool> HasEventAsync(string eventType, string aggregateType, string aggregateId, Guid correlationId, CancellationToken ct = default) =>
             inner.HasEventAsync(eventType, aggregateType, aggregateId, correlationId, ct);
+        public Task<OutboxMessage?> GetByMessageIdAsync(Guid messageId, CancellationToken ct = default) =>
+            inner.GetByMessageIdAsync(messageId, ct);
+
 
         public Task EnqueueAsync(OutboxMessage message, CancellationToken ct = default)
         {

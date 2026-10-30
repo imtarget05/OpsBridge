@@ -47,6 +47,12 @@ public interface IOutboxRepository
     /// </summary>
     Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default);
 
+    /// <summary>
+    /// Lookup a single outbox row by its stable MessageId.
+    /// Read-only: used by the agent investigation workflow (§3.1 §2).
+    /// </summary>
+    Task<OutboxMessage?> GetByMessageIdAsync(Guid messageId, CancellationToken ct = default);
+
     /// <summary>Count only, for cheap health/metrics probes.</summary>
     Task<int> CountStuckAsync(CancellationToken ct = default);
 

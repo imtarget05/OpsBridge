@@ -94,6 +94,7 @@ public partial class EndpointAuthorizationGuardTests
         "GET /internal/agent/outbox/stuck",
         "GET /internal/agent/outbox/pending",
         "GET /internal/agent/outbox/{messageId:guid}",
+        "GET /internal/agent/outbox/investigate/{messageId:guid}",
         "POST /internal/agent/outbox/{messageId:guid}/requeue",
     };
 

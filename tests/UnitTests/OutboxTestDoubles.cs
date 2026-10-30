@@ -97,6 +97,8 @@ internal sealed class FakeOutboxRepository : IOutboxRepository
     public Task<IReadOnlyList<OutboxMessage>> GetStuckAsync(int limit = 50, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<OutboxMessage>>(Array.Empty<OutboxMessage>());
 
+    public Task<OutboxMessage?> GetByMessageIdAsync(Guid messageId, CancellationToken ct = default)
+        => Task.FromResult(Enqueued.FirstOrDefault(m => m.MessageId == messageId));
     public Task<int> CountStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
 
     public Task<int> CountPendingAsync(CancellationToken ct = default) => Task.FromResult(Enqueued.Count);

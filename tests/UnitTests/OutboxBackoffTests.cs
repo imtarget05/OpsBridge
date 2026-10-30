@@ -224,6 +224,8 @@ public class OutboxDispatcherTests
 
         public Task<int> CountPendingAsync(CancellationToken ct = default) => Task.FromResult(messages.Length);
 
+        public Task<OutboxMessage?> GetByMessageIdAsync(Guid messageId, CancellationToken ct = default)
+            => Task.FromResult(messages.FirstOrDefault(m => m.MessageId == messageId));
         public Task<int> RequeueStuckAsync(CancellationToken ct = default) => Task.FromResult(0);
     }
 

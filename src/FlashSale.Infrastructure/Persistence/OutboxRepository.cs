@@ -208,4 +208,13 @@ public sealed class OutboxRepository(AppDbContext db) : IOutboxRepository
               AND  ("DeadLetteredAt" IS NOT NULL OR "NextAttemptAt" > {now})
             """, ct);
     }
+
+    public async Task<OutboxMessage?> GetByMessageIdAsync(
+        Guid messageId,
+        CancellationToken ct = default)
+    {
+        return await db.OutboxMessages
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m => m.MessageId == messageId, ct);
+    }
 }

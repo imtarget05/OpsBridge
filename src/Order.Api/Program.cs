@@ -8,6 +8,7 @@ using FlashSale.Application.Payment;
 using FlashSale.Application.Persistence;
 using FlashSale.Application.Saga;
 using FlashSale.Application.Outbox;
+using FlashSale.Application.AgentOps;
 using FlashSale.Domain;
 using FlashSale.Domain.Automation;
 using FlashSale.Domain.Entities;
@@ -101,6 +102,17 @@ builder.Services.AddScoped<DailyReportUseCase>();
 builder.Services.AddScoped<IAiAutomationService, FlashSale.Infrastructure.Services.AiAutomationService>();
 builder.Services.AddScoped<GenerateReorderRecommendationUseCase>();
 builder.Services.AddScoped<GenerateDailyReportSummaryUseCase>();
+
+        // AgentOps: FlashSale Order Operations Agent (read-only, local MVP, disabled by default)
+        var agentOpsOptions = builder.Configuration
+            .GetSection(AgentOpsOptions.SectionName).Get<AgentOpsOptions>()
+            ?? new AgentOpsOptions { SourceSha = "local-dev" };
+        builder.Services.AddSingleton(agentOpsOptions);
+        builder.Services.AddScoped<IOutboxInvestigationAuditRepository, EfOutboxInvestigationAuditRepository>();
+        builder.Services.AddScoped<OutboxInvestigationWorkflow>();
+        builder.Services.AddScoped<OutboxInvestigationTriage>();
+        builder.Services.AddScoped<OutboxInvestigationInvestigator>();
+        builder.Services.AddScoped<OutboxInvestigationCritic>();
 
 
 // ---------------------------------------------------------------
@@ -202,6 +214,9 @@ app.UseAuthorization();
 // All HTTP endpoints + startup concerns (DatabaseInitializer) are composed in
 // RoutingExtensions.MapFlashSaleEndpoints.
 await app.MapFlashSaleEndpoints();
+
+// Start the HTTP server and block
+await app.RunAsync();
 
 // Explicit, because the --migrate branch above returns an int: top-level
 // statements require every code path to return a value once one of them does.

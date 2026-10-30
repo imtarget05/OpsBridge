@@ -38,3 +38,7 @@ __pycache__/
 # so the ignore entries have to live HERE, not only in src/OpsBridge.Web/.gitignore.
 api.log
 api.pid
+
+# k6 load test result artifacts (generated, never commit)
+load-tests/k6/results.json
+load-tests/k6/summary.json

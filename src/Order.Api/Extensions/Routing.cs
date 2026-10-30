@@ -4,6 +4,7 @@ using FlashSale.Application.Inventory;
 using FlashSale.Application.Messaging;
 using FlashSale.Application.Orders;
 using FlashSale.Application.Outbox;
+using FlashSale.Application.AgentOps;
 using FlashSale.Application.Payment;
 using FlashSale.Application.Persistence;
 using FlashSale.Application.Saga;
@@ -686,6 +687,28 @@ public static class RoutingExtensions
                 _ => Results.Conflict(result),
             };
         });
+
+        // AgentOps: read-only investigation of one dead-lettered outbox event.
+        // HMAC-authenticated via AgentRecoveryAuth; feature-flagged via AgentOps:Enabled.
+        // NO write actions — no requeue, no payment cancel, no order/inventory mutation (§3.1 §7).
+        app.MapGet("/internal/agent/outbox/investigate/{messageId:guid}", async (
+            Guid messageId,
+            HttpContext http,
+            IConfiguration config,
+            OutboxInvestigationWorkflow workflow,
+            CancellationToken ct) =>
+        {
+            var key = config["AgentRecovery:HmacKey"];
+            if (string.IsNullOrWhiteSpace(key) || Encoding.UTF8.GetByteCount(key) < 32)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            if (!await AgentRecoveryAuth.VerifyAsync(http.Request, key, ct))
+                return Results.Unauthorized();
+            var result = await workflow.InvestigateAsync(messageId, null, ct);
+            return Results.Ok(result);
+        })
+        .WithTags("AgentOps")
+        .WithName("InvestigateOutboxMessage")
+        .WithSummary("Read-only investigation of one dead-lettered outbox event. Triage → Investigator → Critic. No write actions.");
 
         app.MapPost("/api/inbox/consume", async (
             InboxConsumeApiRequest request,
