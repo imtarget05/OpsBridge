@@ -98,7 +98,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # RUNTIME STAGE - nginx serving the bundle and proxying /api.
 # ---------------------------------------------------------------------------
-FROM nginx:1.27-alpine AS final
+FROM nginx:1.29-alpine AS final
 
 # The one runtime knob of the web tier: where the API is. The default is the
 # API's CONTAINER port (8080) - correct for a Docker-to-Docker hop, and
