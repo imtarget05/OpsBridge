@@ -14,7 +14,7 @@
          over an in-memory TestServer, so the auth flow is exercised through the
          same middleware pipeline the deployed API uses instead of a re-creation
          of it. Version tracks the ASP.NET Core 10.0.x runtime. -->
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="3.12.0" />
     <PackageReference Include="Testcontainers.RabbitMq" Version="3.12.0" />
     <PackageReference Include="Testcontainers.Redis" Version="3.12.0" />
