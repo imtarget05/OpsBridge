@@ -10,7 +10,7 @@
     <!-- Clean Architecture: Infrastructure implements Application ports using
          concrete technologies. Nothing here is referenced by Domain/Application. -->
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.18.0" />
-    <PackageReference Include="Confluent.Kafka" Version="2.15.1" />
+    <PackageReference Include="Confluent.Kafka" Version="2.16.0" />
     <!-- ADR-013: JWT minting/validation. NOT part of the Microsoft.AspNetCore.App
          shared framework (verified by compile probe), so it must be referenced
          explicitly. Hand-rolling JWT crypto to avoid one package would be worse. -->
