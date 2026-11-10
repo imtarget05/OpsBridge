@@ -749,7 +749,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Build order-api image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -757,7 +757,7 @@ jobs:
           load: true
           tags: flashsale/order-api:ci-${{ github.sha }}
       - name: Build order-worker image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.worker
@@ -765,7 +765,7 @@ jobs:
           load: true
           tags: flashsale/order-worker:ci-${{ github.sha }}
       - name: Build payment-service image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.payment
@@ -794,7 +794,7 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
       - name: Build opsbridge-api image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.opsbridge
@@ -802,7 +802,7 @@ jobs:
           load: true
           tags: opsbridge/api:ci-${{ github.sha }}
       - name: Build opsbridge-web image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.web
@@ -935,21 +935,21 @@ jobs:
           echo "payment=${{ vars.ACR_LOGIN_SERVER }}/payment-service:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - name: Build and push order-api:<sha>
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.api }}
       - name: Build and push order-worker:<sha>
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.worker
           push: true
           tags: ${{ steps.tags.outputs.worker }}
       - name: Build and push payment-service:<sha>
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.payment
