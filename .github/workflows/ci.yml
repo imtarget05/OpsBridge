@@ -747,7 +747,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build order-api image (no push)
         uses: docker/build-push-action@v6
         with:
@@ -933,7 +933,7 @@ jobs:
           echo "api=${{ vars.ACR_LOGIN_SERVER }}/order-api:${GITHUB_SHA}"     >> "$GITHUB_OUTPUT"
           echo "worker=${{ vars.ACR_LOGIN_SERVER }}/order-worker:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "payment=${{ vars.ACR_LOGIN_SERVER }}/payment-service:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build and push order-api:<sha>
         uses: docker/build-push-action@v6
         with:
