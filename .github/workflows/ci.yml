@@ -67,7 +67,7 @@ jobs:
           RATE=$(python3 -c "import xml.etree.ElementTree as ET; r=ET.parse('$FILE').getroot(); print(float(r.get('line-rate','0')))")
           echo "Line coverage: ${RATE}"
           python3 -c "r=${RATE}; exit(0 if r >= 0.75 else 1)" || { echo "FAIL: coverage ${RATE} below 75% threshold"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-cobertura
@@ -82,7 +82,7 @@ jobs:
             dotnet list "$csproj" package --vulnerable --include-transitive || fail=1
           done
           exit $fail
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: unit-test-results
@@ -122,7 +122,7 @@ jobs:
         run: >
           dotnet test tests/IntegrationTests/FlashSale.IntegrationTests.csproj
           -v normal --logger trx --results-directory ./test-results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: integration-test-results
@@ -164,7 +164,7 @@ jobs:
         run: >
           dotnet test tests/OpsBridge.IntegrationTests/OpsBridge.IntegrationTests.csproj
           --no-build -v normal --logger trx --results-directory ./test-results/opsbridge
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: opsbridge-test-results
@@ -319,7 +319,7 @@ jobs:
       - name: Upload the Playwright report, traces and the API log
         # always(): a red journey is only diagnosable with its artefacts.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: opsbridge-web-e2e
           path: |
@@ -611,7 +611,7 @@ jobs:
           # the reverse proxy: every /api/v1/... line is a request the browser
           # made to the web container.
           grep -E '"(GET|POST) /api' stack-logs/web.log | tail -40 > stack-logs/web-api-access.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: opsbridge-stack-smoke
@@ -711,7 +711,7 @@ jobs:
             --stock 10 --requests 50 --psql-container '' --settle-seconds 3 \
             --ops-token "$OPS_TOKEN" | tee result.txt
           grep -q "RESULT: PASS" result.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: harness-result
