@@ -10,7 +10,7 @@
 # image's built-in `app` user (uid 1654, ADR-007) and no shell-time privilege
 # escalation. The published output is owned by the app user so the pod can run
 # with runAsNonRoot + readOnlyRootFilesystem.
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 # Restore layer: only the four project files that make up the OpsBridge API's
 # dependency graph (Api -> Infrastructure -> Application -> Domain) are copied
