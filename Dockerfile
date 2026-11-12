@@ -12,7 +12,7 @@ RUN dotnet publish "Order.Api.csproj" -c Release -o /app/publish /p:UseAppHost=f
 WORKDIR "/src/src/HealthProbe"
 RUN dotnet publish "HealthProbe.csproj" -c Release -o /app/healthprobe /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS final
 WORKDIR /app
 EXPOSE 8080
 # Install krb5 library for Kerberos/SSPI support
